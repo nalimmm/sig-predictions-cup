@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# runtime files written by the bot and the dashboard
+*.log
+dashboard_token.txt
+
+# secrets
+.env
+predictions-cup.env
