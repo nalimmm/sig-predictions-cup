@@ -4,7 +4,7 @@ Instruments are outcome token ids. Sources, each used for what it is authoritati
 
   CLOB (py-clob-client, authenticated)  open orders, USDC balance, token balances, order entry
   CLOB (public)                         order books with tick size and minimum order size, price history
-  Data API (public)                     average cost of each position
+  Data API v2 (public)                  average cost of each position
   Gamma API (public)                    market slug + outcome -> token id
 
 Differences with the tournament that the adapter absorbs:
@@ -43,6 +43,24 @@ def make_client(private_key: str, funder: str, signature_type: int = 1, host: st
     client = ClobClient(host, key=private_key, chain_id=137, signature_type=signature_type, funder=funder)
     client.set_api_creds(client.create_or_derive_api_creds())
     return client
+
+
+def _position_row(r: dict) -> dict:
+    """One Data API position, whatever the version: v2 names first, v1 names as a fallback."""
+    def pick(*names):
+        for n in names:
+            if r.get(n) is not None:
+                return r[n]
+        return None
+    token = pick("token_id", "asset")
+    if token is None:
+        raise RuntimeError(f"Data API position without a token id: {sorted(r)}")
+    return {"token": str(token),
+            "size": float(pick("current_size", "size") or 0),
+            "avg": float(pick("avg_price", "avgPrice") or 0),
+            "price": float(pick("current_price", "curPrice") or 0),
+            "redeemable": bool(r.get("redeemable")),
+            "title": r.get("title"), "outcome": r.get("outcome")}
 
 
 class PolymarketVenue:
@@ -114,13 +132,30 @@ class PolymarketVenue:
                     min_size=m.get("min_size", 5.0), min_notional=MIN_BUY_NOTIONAL)
 
     def _data_positions(self) -> List[dict]:
-        rows, offset = [], 0
-        while True:
-            page = self._get(f"{DATA}/positions", user=self.funder, sizeThreshold=0, limit=500, offset=offset)
-            rows += page
-            if len(page) < 500:
+        """Open positions of the wallet from the Data API v2 (v1 was retired: HTTP 410).
+
+        v2 wraps the rows in {"data": [...], "pagination": {"has_more", "next_cursor", ...}} and
+        renamed the fields; rows are normalised here so the rest of the adapter does not depend on
+        the API version. A partial list would understate the account, so anything unexpected
+        (unknown shape, a cursor that does not advance) raises and the round is skipped."""
+        rows, seen, cursor = [], set(), None
+        for _ in range(100):
+            params = {"user": self.funder, "limit": 500}
+            if cursor:
+                params["cursor"] = cursor
+            page = self._get(f"{DATA}/v2/positions", **params)
+            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+                raise RuntimeError(f"unexpected answer from {DATA}/v2/positions: {str(page)[:200]}")
+            new = [_position_row(r) for r in page["data"]]
+            if any(r["token"] in seen for r in new):
+                raise RuntimeError("Data API pagination is not advancing: positions would be incomplete")
+            seen.update(r["token"] for r in new)
+            rows += new
+            pagination = page.get("pagination") or {}
+            cursor = pagination.get("next_cursor")
+            if not pagination.get("has_more") or not cursor:
                 return rows
-            offset += 500
+        raise RuntimeError("Data API pagination did not end after 100 pages")
 
     def _token_balance(self, token: str) -> float:
         from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
@@ -128,10 +163,9 @@ class PolymarketVenue:
         return float(r["balance"]) / USDC
 
     def snapshot(self, basket, with_outside=False) -> Snapshot:
-        rows = {str(r["asset"]): r for r in self._data_positions()
-                if float(r.get("size") or 0) > 0 and not r.get("redeemable")}
+        rows = {r["token"]: r for r in self._data_positions() if r["size"] > 0 and not r["redeemable"]}
         for token, r in rows.items():
-            self.labels.setdefault(token, f"{r.get('title', token[:8])} [{r.get('outcome', '?')}]")
+            self.labels.setdefault(token, f"{r['title'] or 'token ' + token[:8]} [{r['outcome'] or '?'}]")
         watched = list(basket) + [t for t in rows if t not in basket and with_outside]
         self._books = {}
         for token in watched:
@@ -152,20 +186,20 @@ class PolymarketVenue:
         value = 0.0
         for token in list(dict.fromkeys(watched + list(rows))):
             r = rows.get(token)
-            qty = float(r["size"]) if r else 0.0
+            qty = r["size"] if r else 0.0
             if self.client is not None and token in watched:
                 qty = self._token_balance(token)   # authoritative and immediate
             if qty <= 0:
                 continue
             bid = self._books[token].bids[0].price if token in self._books and self._books[token].bids else None
-            mark = bid if bid is not None else float(r.get("curPrice") or 0) if r else 0.0
+            mark = bid if bid is not None else r["price"] if r else 0.0
             value += qty * mark     # marked at the bid: what a sale would actually fetch
-            if r is None or not float(r.get("avgPrice") or 0):
+            if r is None or not r["avg"]:
                 snap.blocked.add(token)
                 snap.notes.append(f"{self.label(token)}: {qty:g} held but average cost not published yet, "
                                   f"left untouched this round")
                 continue
-            avg = float(r["avgPrice"])
+            avg = r["avg"]
             snap.positions[token] = Position(token, qty, avg, qty * avg)
         snap.equity = snap.cash + value
         for token in watched:
