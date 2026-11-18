@@ -125,7 +125,23 @@ def test_ladder_5x_below_twenty_cents_and_cap_at_95():
     assert ladder_targets(100, 0.40, c, CENT) == [(0.80, 50), (0.95, 50)]
     assert ladder_targets(100, 0.50, c, CENT) == [(0.95, 100)]           # both legs capped: one order
     assert ladder_targets(100, 0.223, c, CENT) == [(0.45, 50), (0.67, 50)]  # targets round UP to the tick
-    assert ladder_targets(100, 0.30, cfg(low_leg_floor=0.70), CENT) == [(0.70, 50), (0.90, 50)]
+
+
+def test_sell_floor_applies_to_both_legs_once_the_guard_is_armed():
+    c = cfg(guard_sell_floor=0.70)
+    assert ladder_targets(100, 0.30, c, CENT, floor=0.70) == [(0.70, 50), (0.90, 50)]
+    assert ladder_targets(100, 0.20, c, CENT, floor=0.70) == [(0.70, 100)]      # 0.40 and 0.60 both raised: one order
+    assert ladder_targets(100, 0.15, c, CENT, floor=0.70) == [(0.70, 50), (0.75, 50)]
+    assert ladder_targets(100, 0.40, c, CENT, floor=0.70) == [(0.80, 50), (0.95, 50)]   # already above: unchanged
+    pos = Position("A", 100, 0.30, 30)
+    day = plan_round(snap(positions=[pos]), {"A": 0.30}, c, BUILD, books())
+    assert [s.price for s in places(day, "sell")] == [0.60, 0.90]               # guard not armed: no floor
+    night = plan_round(snap(positions=[pos]), {"A": 0.30}, c, HOLD, books())
+    assert [s.price for s in places(night, "sell")] == [0.70, 0.90]
+    # the day ladder left in the book is replaced when the floor comes into force
+    old = [OpenOrder("lo", "A", "sell", 0.60, 50), OpenOrder("hi", "A", "sell", 0.90, 50)]
+    swap = plan_round(snap(positions=[pos], orders=old), {"A": 0.30}, c, HOLD, books())
+    assert cancels(swap) == ["lo"] and [(s.price, s.quantity) for s in places(swap)] == [(0.70, 50)]
 
 
 def test_ladder_with_small_positions():

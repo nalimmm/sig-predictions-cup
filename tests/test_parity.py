@@ -55,14 +55,14 @@ class FakeAPI:
         raise AssertionError(path)
 
 
-def run_legacy(sc, now, monkeypatch):
+def run_legacy(sc, now, monkeypatch, refs=None):
     api, out = FakeAPI(sc), []
     monkeypatch.setattr(legacy, "get", api.get)
     monkeypatch.setattr(legacy, "log", lambda m: None)
     monkeypatch.setattr(legacy, "now", lambda: now)
     monkeypatch.setattr(legacy, "basket_ids", {})
     monkeypatch.setattr(legacy, "ids_at", 0.0)
-    monkeypatch.setattr(legacy, "precount_refs", {})
+    monkeypatch.setattr(legacy, "precount_refs", {} if refs is None else refs)
     monkeypatch.setattr(legacy, "place", lambda tid, ex, action, qty, price, side="yes":
                         out.append(("place", ex + (NO if side == "no" else ""), action, float(int(qty)), round(price, 3))))
     monkeypatch.setattr(legacy, "cancel", lambda o, reason: out.append(("cancel", o["id"])))
@@ -70,12 +70,19 @@ def run_legacy(sc, now, monkeypatch):
     return sorted(out)
 
 
-def run_engine(sc, now):
+def venue_for(sc):
     venue = SupermarketVenue("key", dict(legacy.BASKET), sleep=lambda s: None)
     venue._get = FakeAPI(sc).get
-    plan = Runner(venue, Config.sig_cup(), live=False, log=lambda m: None, clock=lambda: now).round()
+    return venue
+
+
+def actions(plan):
     return sorted(("cancel", a.order.id) if isinstance(a, Cancel) else
                   ("place", a.instrument, a.action, float(a.quantity), round(a.price, 3)) for a in plan.actions)
+
+
+def run_engine(sc, now):
+    return actions(Runner(venue_for(sc), Config.sig_cup(), live=False, log=lambda m: None, clock=lambda: now).round())
 
 
 def scenario(rng, invested=0.6, night=False):
@@ -192,18 +199,33 @@ def test_parity_scenarios_cover_every_rule(monkeypatch):
     assert seen == {"day buy", "night buy", "cover short", "cleanup", "rescue", "ladder"}
 
 
-def test_reference_can_be_read_earlier_than_the_window_start():
-    """Not in the original bot: `reference_at` reads the pre-window price before the market starts
-    to move, so an early leg of a drop cannot lower the bar of the drop guard."""
+def test_reference_fallback_ignores_a_candle_still_open_at_the_window_start():
     venue = SupermarketVenue("key", {}, sleep=lambda s: None)
     venue._tid = "tid"
-    venue._get = lambda path, **kw: {"candles": [{"time": "2026-11-03T21:00:00Z", "close": 0.25},
-                                                 {"time": "2026-11-03T22:00:00Z", "close": 0.21},
-                                                 {"time": "2026-11-03T23:00:00Z", "close": 0.14}]}
-    assert venue.reference("ex", datetime(2026, 11, 4, tzinfo=timezone.utc)) == 0.14      # original rule
-    cfg = Config.sig_cup()
-    cfg.rolling.reference_at = datetime(2026, 11, 3, 22, tzinfo=timezone.utc)
-    runner = Runner(venue, cfg, log=lambda m: None)
-    assert runner._reference("ex") == 0.25
-    venue._get = lambda path, **kw: {"candles": []}
-    assert runner._reference("ex") == 0.25                                                # frozen once read
+    venue._get = lambda path, **kw: {"candles": [{"time": "2026-11-03T22:00:00Z", "close": 0.25},
+                                                 {"time": "2026-11-03T23:30:00Z", "close": 0.14},
+                                                 {"time": "2026-11-04T00:00:00Z", "close": 0.08}]}
+    assert venue.reference("ex", datetime(2026, 11, 4, tzinfo=timezone.utc)) == 0.25
+
+
+def test_frozen_reference_same_night_decisions_as_the_bot(monkeypatch, tmp_path):
+    """The Florida case. Last pre-count hour: both snapshot the quotes. After midnight prices drop and
+    the hourly history now shows the drop: both must still filter on the price frozen before the count,
+    and still do so after a restart."""
+    rng = random.Random(4)
+    for i in range(60):
+        before = scenario(rng, invested=0.3)
+        after = scenario(rng, invested=0.3, night=True)
+        after["refs"] = {ex: 0.02 for ex in EX.values()}       # history polluted by the drop: must not be read
+        refs_old, file_new = {}, str(tmp_path / f"refs{i}.json")
+        runner = Runner(venue_for(before), Config.sig_cup(), log=lambda m: None, clock=lambda: GUARD, refs_file=file_new)
+        assert run_legacy(before, GUARD, monkeypatch, refs=refs_old) == actions(runner.round())
+        runner.venue._get = FakeAPI(after).get
+        runner.clock = lambda: NIGHT
+        old = run_legacy(after, NIGHT, monkeypatch, refs=refs_old)
+        assert actions(runner.round()) == old
+        assert runner._refs == refs_old
+        quoted = [ex for ex in EX.values() if before["quotes"][ex][0] is not None]
+        assert quoted and all(refs_old[ex] != 0.02 for ex in quoted)   # snapshot, not the polluted history
+        restarted = Runner(venue_for(after), Config.sig_cup(), log=lambda m: None, clock=lambda: NIGHT, refs_file=file_new)
+        assert actions(restarted.round()) == old

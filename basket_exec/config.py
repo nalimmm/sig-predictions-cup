@@ -21,14 +21,9 @@ class Rolling:
     momentum_max: float = 1.5      # never buy above this multiple of the pre-window price
     drop_guard: float = 0.80       # no buy if the bid sits below this share of the pre-window price
     max_share: float = 0.35        # cost per instrument capped at this share of the account
-    reference_at: Optional[datetime] = None   # when the "pre-window" price is read (default: start).
-                                              # Set it earlier if the market can move before the window opens.
 
     def __post_init__(self):
         self.start, self.buys_end = parse_time(self.start), parse_time(self.buys_end)
-        self.reference_at = parse_time(self.reference_at) if self.reference_at else self.start
-        if self.reference_at > self.start:
-            raise ValueError("reference_at must not be after the start of the rolling window")
 
 
 @dataclass
@@ -50,7 +45,8 @@ class Config:
     leg_high_mult_cheap: float = 5.0         # ... or 5x when the average cost is below high_leg_below
     high_leg_below: float = 0.20
     sell_cap: float = 0.95                   # no target above this
-    low_leg_floor: Optional[float] = None    # optional floor on the low leg (sell confirmation, not mid river)
+    guard_sell_floor: Optional[float] = None  # once the guard is armed, no leg below this price
+                                              # (sell confirmation, not mid river)
 
     # Rescue
     rescue_fraction: float = 0.50            # full sale if bid <= this share of the average cost ...
@@ -81,4 +77,4 @@ class Config:
         return cls(
             build_until="2026-11-03T23:00:00Z",
             rolling=Rolling(start="2026-11-04T00:00:00Z", buys_end="2026-11-04T16:00:00Z"),
-            min_cash_reserve=200, min_tranche_notional=100, cleanup_outside=True)
+            guard_sell_floor=0.70, min_cash_reserve=200, min_tranche_notional=100, cleanup_outside=True)

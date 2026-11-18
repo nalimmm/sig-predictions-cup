@@ -119,6 +119,12 @@ def bot(api, monkeypatch):
     return b
 
 
+@pytest.fixture(autouse=True)
+def _precount_file_in_tmp(tmp_path, monkeypatch):
+    """The bot saves its frozen pre-count references next to itself: keep that out of the repository."""
+    monkeypatch.setattr(bb, "PRECOUNT_FILE", str(tmp_path / "precount_refs.json"))
+
+
 def basket(api, **quotes):
     """Register every basket contract as exchange 'b0'..'b7'; quotes override (bid, ask, ask_qty)."""
     ids = {}
