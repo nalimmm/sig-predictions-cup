@@ -6,7 +6,9 @@ venv/
 # runtime files written by the bot and the dashboard
 *.log
 dashboard_token.txt
+precount_refs.json
 
 # secrets
 .env
 predictions-cup.env
+.pytest_cache/
