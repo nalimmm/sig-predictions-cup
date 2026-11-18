@@ -1,2 +1,6 @@
 requests>=2.31
 matplotlib>=3.8
+# basket_exec (the venue-neutral execution library)
+pyyaml>=6.0
+py-clob-client>=0.34   # only for the Polymarket adapter
+pytest>=8.0            # only for the tests

@@ -110,6 +110,40 @@ deploy/
 
 The four v1 market making bots and the one day turbo bot also ran during the campaign; their source is not included in this repository.
 
+## Reusing the execution logic elsewhere: `basket_exec`
+
+`src/basket_bot.py` is kept as it ran. Its execution rules now also live in `basket_exec/`, a small library with no tournament in it, so the same process can run on another venue:
+
+```
+basket_exec/
+  engine.py                 plan_round(): one pure function, account snapshot in, orders to cancel and place out
+  config.py                 every parameter; Config.sig_cup() reproduces the tournament bot
+  runner.py                 the stateless round (read, plan, execute), simulation by default, and the Venue interface
+  adapters/supermarket.py   the tournament API, kept as the reference adapter
+  adapters/polymarket.py    the Polymarket CLOB (real money)
+examples/polymarket_basket.yaml
+tests/                      python -m pytest tests
+```
+
+What carries over unchanged: tranche buys that take only the size shown at the best offer and never pay more than the reference plus 10%; the sell ladder (half at 2x the average cost, half at 3x, 5x below 0.20, capped at 0.95); the rescue at the greater of 50% of the average cost and 0.10; the rolling window; and cash accounting where budgets are a share of equity but only real cash, net of resting buys and of the reserve, can be spent. `tests/test_parity.py` feeds 1,200 random account states to both the original bot and the library and checks they decide the same orders.
+
+What is new, because a real wallet is not a tournament account:
+
+* Positions and orders outside the basket are left alone unless `cleanup_outside` is set. The tournament bot sold everything else on the account.
+* `max_capital` sizes the basket on a fixed amount instead of the whole wallet.
+* Tick size, minimum order size and minimum buy value are per instrument. A ladder leg too small for the venue is merged into the low leg.
+* The rescue can be armed while the basket is still being built (`guard_from`). In that case a collapsed instrument is not bought back.
+* `rolling.reference_at` lets the pre window price be read earlier than the window start.
+* On Polymarket, quantities come from the CLOB token balance and cash from the USDC balance; the Data API only supplies the average cost.
+
+```
+POLYMARKET_FUNDER=0x... python -m basket_exec --config examples/polymarket_basket.yaml          # dry run, sends nothing
+POLYMARKET_FUNDER=0x... POLYMARKET_PRIVATE_KEY=... python -m basket_exec --config ... --live    # real orders
+python -m basket_exec --config ... --live --stop                                                # cancel the basket's orders
+```
+
+The Polymarket adapter is tested against canned API payloads only. It has not yet placed a real order: run it in dry run first, then live with a small `max_capital`. The honest limitations above still apply, and this is not investment advice.
+
 ## Reproducing
 
 The charts need only Python 3.11+ and the pinned requirements:

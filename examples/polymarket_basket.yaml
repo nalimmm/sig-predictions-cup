@@ -1,0 +1,29 @@
+# Example only: the slugs and reference prices below are placeholders, not a recommendation.
+# Dry run (reads the account, sends nothing):
+#   POLYMARKET_FUNDER=0x...  python -m basket_exec --config examples/polymarket_basket.yaml
+# Live:
+#   POLYMARKET_FUNDER=0x...  POLYMARKET_PRIVATE_KEY=...  POLYMARKET_SIGNATURE_TYPE=1 \
+#   python -m basket_exec --config examples/polymarket_basket.yaml --live
+venue: polymarket
+round_seconds: 60
+paper_cash: 500            # dry run without a private key only: cash to pretend the wallet holds
+
+basket:                    # reference = the price you accept to build around; never paid above reference x 1.10
+  - slug: example-market-slug-one
+    outcome: "Yes"
+    reference: 0.30
+  - slug: example-market-slug-two
+    outcome: "No"
+    reference: 0.25
+
+strategy:
+  build_until: "2027-01-31T00:00:00Z"   # tranche buys stop here
+  guard_from: "2026-01-01T00:00:00Z"    # rescue armed from here (a past date = always armed)
+  max_capital: 500                      # size on min(account value, this): the wallet is not all in by default
+  price_cap_mult: 1.10
+  cash_buffer: 0.02
+  min_cash_reserve: 5
+  min_tranche_notional: 2
+  rescue_fraction: 0.50
+  rescue_floor: 0.10
+  cleanup_outside: false                # true would SELL every other position of the wallet: dedicated wallets only
