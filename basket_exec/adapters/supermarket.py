@@ -118,12 +118,13 @@ class SupermarketVenue:
         return Book(bids=side("bids", True), asks=side("asks", False))
 
     def reference(self, instrument, before: datetime) -> Optional[float]:
-        """Close of the last hourly candle that started before `before` (same rule as the original bot)."""
+        """Close of the last hourly candle that ENDED by `before`: a candle still open at that time
+        would mix in later prices. Fallback only; the runner normally freezes its own snapshot."""
         start = (before - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%SZ")
         h = self._get(f"/exchanges/{instrument}/price-history", tournamentId=self.tid, resolution="1h",
                       **{"from": start}, limit=12)
         closes = [(parse_time(c["time"]), c["close"]) for c in h["candles"]
-                  if c["close"] is not None and parse_time(c["time"]) < before]
+                  if c["close"] is not None and parse_time(c["time"]) + timedelta(hours=1) <= before]
         return max(closes)[1] if closes else None
 
     def place(self, order: Place) -> str:

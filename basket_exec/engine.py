@@ -5,7 +5,8 @@ does no I/O and keeps no state: every round starts from what the venue reports, 
 stopped and restarted at any time without losing or doubling a position.
 
   1. SELLS. Every basket position carries a ladder: half at 2x the average cost, half at 3x (5x
-     when the average cost is below 0.20), capped at 0.95. Once the guard is armed, a position
+     when the average cost is below 0.20), capped at 0.95. Once the guard is armed, no leg is
+     posted below `guard_sell_floor` if one is set (0.70 in the tournament), and a position
      whose best bid falls to max(50% of the average cost, 0.10) is sold whole to the best bidder
      instead (RESCUE). With `cleanup_outside`, positions outside the basket are sold to the best
      bidder and orders outside the basket are cancelled.
@@ -49,14 +50,13 @@ def _total(orders) -> float:
     return sum(o.remaining for o in orders)
 
 
-def ladder_targets(quantity: float, avg_cost: float, cfg: Config, spec: Spec):
-    """[(price, quantity)] of the sell ladder for a position. Legs the venue would reject as too
-    small are merged into the low leg; a position below the minimum order size gets no ladder."""
-    low = min(cfg.sell_cap, cfg.leg_low_mult * avg_cost)
-    if cfg.low_leg_floor is not None:
-        low = min(cfg.sell_cap, max(low, cfg.low_leg_floor))
+def ladder_targets(quantity: float, avg_cost: float, cfg: Config, spec: Spec, floor: float = 0.0):
+    """[(price, quantity)] of the sell ladder for a position: both legs raised to `floor`, capped at
+    sell_cap. Legs the venue would reject as too small are merged into the low leg; a position
+    below the minimum order size gets no ladder."""
     mult = cfg.leg_high_mult_cheap if avg_cost < cfg.high_leg_below else cfg.leg_high_mult
-    leg_low, leg_high = tick_up(low, spec.tick), tick_up(min(cfg.sell_cap, mult * avg_cost), spec.tick)
+    leg_low = tick_up(min(cfg.sell_cap, max(floor, cfg.leg_low_mult * avg_cost)), spec.tick)
+    leg_high = tick_up(min(cfg.sell_cap, max(floor, mult * avg_cost)), spec.tick)
     q = floor_step(quantity, spec.size_step)
     smallest = max(spec.min_size, spec.size_step)
     if q < smallest - EPS:
@@ -81,6 +81,7 @@ def plan_round(snap: Snapshot, basket: Dict[str, float], cfg: Config, now: datet
     roll = cfg.rolling if cfg.rolling and now >= cfg.rolling.start else None
     roll_buys = roll is not None and now < roll.buys_end
     equity = snap.equity if cfg.max_capital is None else min(snap.equity, cfg.max_capital)
+    sell_floor = cfg.guard_sell_floor if guard and cfg.guard_sell_floor else 0.0
 
     def dump(inst, sells, quantity, price, why):
         """Sell everything to the best bidder, reusing orders already resting at that price."""
@@ -96,7 +97,7 @@ def plan_round(snap: Snapshot, basket: Dict[str, float], cfg: Config, now: datet
             note(f"{inst}: {left:g} left to sell is below the venue minimum")
 
     def ladder(inst, sells, quantity, avg_cost):
-        wanted = ladder_targets(quantity, avg_cost, cfg, spec(inst))
+        wanted = ladder_targets(quantity, avg_cost, cfg, spec(inst), sell_floor)
         if not wanted:
             note(f"{inst}: position {quantity:g} is below the minimum order size, no ladder")
         keep = []

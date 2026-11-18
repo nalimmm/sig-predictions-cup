@@ -42,7 +42,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     with open(a.config, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
-    runner = Runner(build_venue(raw, a.live), Config.from_dict(raw["strategy"]), live=a.live)
+    runner = Runner(build_venue(raw, a.live), Config.from_dict(raw["strategy"]), live=a.live,
+                    refs_file=raw.get("refs_file", "basket_refs.json"))
     if a.stop:
         runner.stop()
     else:

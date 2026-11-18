@@ -131,7 +131,7 @@ examples/polymarket_basket.yaml
 tests/                      python -m pytest tests
 ```
 
-What carries over unchanged: tranche buys that take only the size shown at the best offer and never pay more than the reference plus 10%; the sell ladder (half at 2x the average cost, half at 3x, 5x below 0.20, capped at 0.95); the rescue at the greater of 50% of the average cost and 0.10; the rolling window; and cash accounting where budgets are a share of equity but only real cash, net of resting buys and of the reserve, can be spent. `tests/test_parity.py` feeds 1,200 random account states to both the original bot and the library and checks they decide the same orders.
+What carries over unchanged: tranche buys that take only the size shown at the best offer and never pay more than the reference plus 10%; the sell ladder (half at 2x the average cost, half at 3x, 5x below 0.20, capped at 0.95); the rescue at the greater of 50% of the average cost and 0.10; the sell floor once the guard is armed (`guard_sell_floor`, 0.70 in the tournament); the rolling window with its pre window reference snapshotted, frozen at the start of the window and saved to a file so a restart cannot move it; and cash accounting where budgets are a share of equity but only real cash, net of resting buys and of the reserve, can be spent. `tests/test_parity.py` feeds 1,200 random account states to both the bot and the library and checks they decide the same orders, then replays the Florida case (prices and history dropping after the window opens, then a restart) on both.
 
 What is new, because a real wallet is not a tournament account:
 
@@ -139,7 +139,6 @@ What is new, because a real wallet is not a tournament account:
 * `max_capital` sizes the basket on a fixed amount instead of the whole wallet.
 * Tick size, minimum order size and minimum buy value are per instrument. A ladder leg too small for the venue is merged into the low leg.
 * The rescue can be armed while the basket is still being built (`guard_from`). In that case a collapsed instrument is not bought back.
-* `rolling.reference_at` lets the pre window price be read earlier than the window start.
 * On Polymarket, quantities come from the CLOB token balance and cash from the USDC balance; the Data API only supplies the average cost.
 
 ```
