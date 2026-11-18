@@ -10,3 +10,4 @@ dashboard_token.txt
 # secrets
 .env
 predictions-cup.env
+.pytest_cache/
