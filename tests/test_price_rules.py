@@ -112,7 +112,7 @@ def test_no_rescue_just_above_threshold(api, bot):
     basket(api, b3=(0.155, 0.16, 0))
     api.position("b3", 1000, 0.30)
     bot.run(GUARD)
-    assert bot.sells("b3") == [(500, 0.60), (500, 0.90)]
+    assert bot.sells("b3") == [(500, 0.70), (500, 0.90)]  # ladder kept; low leg raised to the 0.70 night floor
 
 
 def test_absolute_floor_rescues_cheap_positions(api, bot):
@@ -128,7 +128,7 @@ def test_floor_does_not_fire_above_it(api, bot):
     basket(api, b4=(0.105, 0.11, 0))
     api.position("b4", 1000, 0.15)
     bot.run(NIGHT)
-    assert bot.sells("b4") == [(500, 0.30), (500, 0.75)]
+    assert bot.sells("b4") == [(500, 0.70), (500, 0.75)]  # no rescue: ladder, low leg at the 0.70 night floor
 
 
 # ---------------------------------------------------------------- cleanup outside the basket

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))            # basket_exec
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "deploy"))
 
@@ -116,6 +117,12 @@ def bot(api, monkeypatch):
     monkeypatch.setattr(bb, "precount_refs", {})
     monkeypatch.setattr(bb, "ids_at", 0.0)
     return b
+
+
+@pytest.fixture(autouse=True)
+def _precount_file_in_tmp(tmp_path, monkeypatch):
+    """The bot saves its frozen pre-count references next to itself: keep that out of the repository."""
+    monkeypatch.setattr(bb, "PRECOUNT_FILE", str(tmp_path / "precount_refs.json"))
 
 
 def basket(api, **quotes):
