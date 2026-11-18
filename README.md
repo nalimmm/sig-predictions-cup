@@ -106,6 +106,12 @@ deploy/
   basket-bot.service           systemd unit for the bot
   dashboard.service            systemd unit for the dashboard
   predictions-cup.env.example  environment file template (API key)
+  deploy.sh                    copy to the server, restart, then run the post deploy check
+  post_deploy_check.py         proves the deployed code is the code running (see below)
+tests/
+  test_price_rules.py          unit tests of the bot's price and sizing rules, on a fake API
+  test_scan_replay.py          replay of the scan CSV: README figures, invariants, bot on the scan's books
+  test_post_deploy_check.py    the post deploy check on a fake server tree
 ```
 
 The four v1 market making bots and the one day turbo bot also ran during the campaign; their source is not included in this repository.
@@ -126,6 +132,17 @@ export SUPERMARKET_API_KEY=...
 python3 src/basket_bot.py         # one simulated round, no orders sent
 python3 src/basket_bot.py --live  # what actually ran, as a systemd service
 ```
+
+## Tests and the post deploy check
+
+```
+pip install -r requirements-dev.txt
+python3 -m pytest -q tests
+```
+
+The tests need no API key and no network: the bot runs against an in memory fake of the tournament API. They pin every price and sizing rule to numbers (tick rounding, the 2x/3x/5x ladder and its 0.95 cap, the rescue at 50 percent of cost and the 0.10 floor, the reference plus 10 percent cap, per contract budgets, cash computed from market value, night caps and the drop guard), recompute every figure this README quotes from `data/turbo_scan_results.csv`, and replay the bot on the order books that scan recorded. GitHub Actions runs them on every push.
+
+`deploy/deploy.sh user@server` is the answer to the unverified patch above: it refuses to deploy uncommitted code, copies `src/` and `deploy/`, restarts both services, then runs `deploy/post_deploy_check.py` on the server. The check fails unless the deployed files hash to the commit being deployed, the installed systemd units match `deploy/`, each service started after its code last changed, the bot logged a LIVE start and a `Round OK` with no round error since the restart, and the dashboard answers HTTP 200.
 
 ## Disclaimer
 
