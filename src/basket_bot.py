@@ -12,7 +12,9 @@ stopped and restarted at any time without losing or doubling a position):
     Per-contract budget = account value / number of contracts, recomputed every round.
   - LADDERED SELLS posted as soon as a position exists: half at 2x the average cost, half at 3x
     (5x if the average cost is below 0.20), capped at 0.95. Every spike before election day is
-    monetized automatically; no holding to resolution once a target prints.
+    monetized automatically; no holding to resolution once a target prints. From DAY_BUYS_END
+    onward no leg is posted below NIGHT_SELL_FLOOR (0.70): during the count we sell confirmation,
+    not mid river.
   - GUARD from DAY_BUYS_END onward: RESCUE: if the best bid drops below the greater of 50 percent of
     the average cost and the absolute floor of 0.10, the whole position is sold at market instead of
     riding to zero.
@@ -21,6 +23,10 @@ stopped and restarted at any time without losing or doubling a position):
     below NIGHT_MOMENTUM_MAX times their pre-count price, and whose bid holds at NIGHT_DROP_GUARD of
     that price (never roll into a race that is losing), cheapest first, at most NIGHT_MAX_SHARE of the
     account per contract. Last night buy at NIGHT_BUYS_END; the market freezes at MARKET_FREEZE.
+  - PRE-COUNT REFERENCE, frozen: between DAY_BUYS_END and COUNT_START every round snapshots the mid
+    quote of each basket contract and writes it to PRECOUNT_FILE. At COUNT_START the snapshot stops
+    and the reference is frozen for the rest of the night, including across restarts. Night filters
+    never read a price observed after the count started.
 
 Usage:
   python3 basket_bot.py          -> simulation: one round, no orders are sent
@@ -29,6 +35,7 @@ Usage:
 
 Requires the SUPERMARKET_API_KEY environment variable (the tournament API key).
 """
+import json
 import math
 import os
 import sys
@@ -66,6 +73,8 @@ NIGHT_PRICE_CAP = 0.80            # night: never buy above this (remaining upsid
 NIGHT_MOMENTUM_MAX = 1.5          # night: never buy above 1.5x the pre-count price
 NIGHT_DROP_GUARD = 0.80           # night: no buy if the bid sits below 80 percent of the pre-count price
 NIGHT_MAX_SHARE = 0.35            # night: cost per contract capped at 35 percent of the account
+NIGHT_SELL_FLOOR = 0.70           # from DAY_BUYS_END: no laddered sell leg below this price
+PRECOUNT_FILE = "precount_refs.json"  # frozen pre-count references, survives restarts
 ROUND_SECONDS, IDS_REFRESH = 60, 3600
 
 LIVE = "--live" in sys.argv
@@ -184,19 +193,64 @@ def resolve_ids():
     log(f"Basket: {len(basket_ids)}/{len(BASKET)} contracts resolved")
 
 
+def load_precount_refs():
+    """Reload the frozen references written before the count (a restart must not recompute them)."""
+    try:
+        with open(PRECOUNT_FILE, encoding="utf-8") as f:
+            precount_refs.update({k: float(v) for k, v in json.load(f).items() if v})
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        log(f"WARNING: {PRECOUNT_FILE} unreadable ({e}), pre-count references start empty")
+
+
+def save_precount_refs():
+    tmp = PRECOUNT_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(precount_refs, f, indent=1, sort_keys=True)
+    os.replace(tmp, PRECOUNT_FILE)  # atomic: a crash never leaves a half written file
+
+
+def snapshot_precount(prices):
+    """Before COUNT_START only: record the current mid of every basket contract as its pre-count price.
+
+    Called every round of the last pre-count hour, so the value frozen at COUNT_START is the last
+    quote seen before the first vote is counted (at most one round old)."""
+    changed = False
+    for ex in basket_ids:
+        bid, ask = prices.get(ex, (None, None))
+        mid = (bid + ask) / 2 if bid and ask else (bid or None)
+        if mid and not same(precount_refs.get(ex), mid):
+            precount_refs[ex] = round(mid, 4)
+            changed = True
+    if changed:
+        save_precount_refs()
+
+
 def precount_ref(tid, ex):
-    """Last hourly close before midnight UTC on Nov 4: the state of the market before the count."""
-    if ex in precount_refs:
+    """The frozen pre-count price. Never recomputed from prices observed after COUNT_START.
+
+    Normal path: the snapshot taken before the count (memory, or PRECOUNT_FILE after a restart).
+    Fallback, only if the bot was down for the whole last pre-count hour: the close of the last
+    hourly candle that ENDED by COUNT_START (a candle still open at the count would mix in counted
+    prices). The fallback is frozen and saved the first time it succeeds; a failure is not cached."""
+    if precount_refs.get(ex):
         return precount_refs[ex]
     try:
         h = get(f"/exchanges/{ex}/price-history", tournamentId=tid, resolution="1h",
                 **{"from": "2026-11-03T16:00:00Z"}, limit=12)
-        closes = [(parse(c["time"]), c["close"]) for c in h["candles"]
-                  if c["close"] is not None and parse(c["time"]) < parse(COUNT_START)]
-        precount_refs[ex] = max(closes)[1] if closes else None
     except RuntimeError as e:
         log(f"Pre-count reference for {name(ex)} unreadable: {e}")
         return None
+    count = parse(COUNT_START)
+    closes = [(parse(c["time"]), c["close"]) for c in h["candles"]
+              if c["close"] is not None and parse(c["time"]).timestamp() + 3600 <= count.timestamp()]
+    if not closes:
+        log(f"Pre-count reference for {name(ex)}: no complete candle before the count, no night buy")
+        return None
+    precount_refs[ex] = max(closes)[1]
+    log(f"WARNING: no pre-count snapshot for {name(ex)}, frozen from the hourly history at {precount_refs[ex]:.3f}")
+    save_precount_refs()
     return precount_refs[ex]
 
 
@@ -220,10 +274,17 @@ def dump_at_best_bid(tid, ex, side, sells, qty, price):
         place(tid, ex, "sell", left, price, side=side)
 
 
-def laddered_sells(tid, ex, sells, q, avg):
-    """Half at 2x, half at 3x (5x if avg below 0.20), capped at 0.95. Reuses orders already at the right price."""
-    leg_low = tick_up(min(0.95, 2 * avg))
-    leg_high = tick_up(min(0.95, (5 if avg < HIGH_LEG_BELOW else 3) * avg))
+def sell_legs(avg, floor=0.0):
+    """Laddered sell prices: 2x and 3x (5x if avg below 0.20) the average cost, raised to `floor`,
+    capped at 0.95."""
+    leg_low = tick_up(min(0.95, max(floor, 2 * avg)))
+    leg_high = tick_up(min(0.95, max(floor, (5 if avg < HIGH_LEG_BELOW else 3) * avg)))
+    return leg_low, leg_high
+
+
+def laddered_sells(tid, ex, sells, q, avg, floor=0.0):
+    """Half at the low leg, half at the high leg (see sell_legs). Reuses orders already at the right price."""
+    leg_low, leg_high = sell_legs(avg, floor)
     q_low = q // 2
     wanted = [(leg_low, q_low), (leg_high, q - q_low)] if leg_high > leg_low else [(leg_low, q)]
     keep, drop = [], []
@@ -269,6 +330,9 @@ def one_round(tid):
     cash = equity - sum(p["marketValue"] for p in pos.values())
     managed = set(basket_ids) | set(pos)
     prices = quotes(tid, managed) if managed else {}
+    if guard and not night:
+        snapshot_precount(prices)  # last pre-count hour: keep the reference fresh until it freezes
+    sell_floor = NIGHT_SELL_FLOOR if guard else 0.0
 
     # 1. Positions: basket -> laddered sells (or rescue once the guard is armed); outside -> dump
     for ex in managed:
@@ -293,7 +357,7 @@ def one_round(tid):
                     f"(max of {RESCUE_FRACTION:.0%} of avg cost {p['avgCost']:.3f} and floor {RESCUE_FLOOR})")
                 dump_at_best_bid(tid, ex, "yes", yes_s, q, tick_down(bid))
             else:
-                laddered_sells(tid, ex, yes_s, q, p["avgCost"])
+                laddered_sells(tid, ex, yes_s, q, p["avgCost"], sell_floor)
         elif q > 0 and bid:
             dump_at_best_bid(tid, ex, "yes", yes_s, q, tick_down(bid))
         elif q < 0 and ask:
@@ -385,7 +449,10 @@ if __name__ == "__main__":
                 r = call("DELETE", f"/orders/{o['id']}")
                 log(f"Cancelled order {o['id']} ({name(o['exchangeId'])}): {'OK' if r is not None and r.ok else why(r)}")
         sys.exit()
-    log(f"Starting the basket bot in {'LIVE' if LIVE else 'SIMULATION'} mode")
+    load_precount_refs()
+    # Printed at every start so a deploy can be checked from the log (see "What failed" in the README)
+    log(f"Starting the basket bot in {'LIVE' if LIVE else 'SIMULATION'} mode: night sell floor "
+        f"{NIGHT_SELL_FLOOR}, {len(precount_refs)} frozen pre-count references loaded from {PRECOUNT_FILE}")
     while True:
         try:
             one_round(tid)
