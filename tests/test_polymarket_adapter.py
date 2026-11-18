@@ -27,6 +27,7 @@ class Resp:
 class FakeSession:
     def __init__(self, books, positions, history=None):
         self.books, self.positions, self.history, self.calls = books, positions, history or [], []
+        self.page_size = 500
 
     def get(self, url, params=None, timeout=None):
         self.calls.append((url, params))
@@ -36,9 +37,14 @@ class FakeSession:
         if url == f"{CLOB}/book":
             b = self.books.get(params["token_id"])
             return Resp(b, 200) if b else Resp({"error": "No orderbook exists"}, 404)
-        if url == f"{DATA}/positions":
+        if url == f"{DATA}/positions":      # v1: retired by Polymarket
+            return Resp({"error": "Data API v1 has been retired"}, 410)
+        if url == f"{DATA}/v2/positions":
             assert params["user"] == "0xfunder"
-            return Resp(self.positions)
+            start = int(params.get("cursor") or 0)
+            page, more = self.positions[start:start + self.page_size], start + self.page_size < len(self.positions)
+            return Resp({"data": page, "pagination": {"limit": params["limit"], "offset": start, "has_more": more,
+                                                      "next_cursor": str(start + self.page_size) if more else None}})
         if url == f"{CLOB}/prices-history":
             return Resp({"history": self.history})
         raise AssertionError(url)
@@ -75,9 +81,10 @@ def book(bids, asks, tick="0.01", neg_risk=False):
     return {"bids": lv(bids), "asks": lv(asks), "tick_size": tick, "min_order_size": "5", "neg_risk": neg_risk}
 
 
-def row(asset, size, avg, cur, **kw):
-    return {"asset": asset, "size": size, "avgPrice": avg, "curPrice": cur, "currentValue": size * cur,
-            "initialValue": size * avg, "title": "Will it happen?", "outcome": "Yes", "redeemable": False, **kw}
+def row(token, size, avg, cur, **kw):
+    """A position as Data API v2 returns it."""
+    return {"token_id": token, "current_size": size, "avg_price": avg, "current_price": cur,
+            "title": "Will it happen?", "outcome": "Yes", "redeemable": False, **kw}
 
 
 ENTRIES = [{"slug": "will-it-happen", "outcome": "Yes", "reference": 0.30}]
@@ -119,6 +126,46 @@ def test_snapshot_reads_cash_orders_positions_and_sorts_the_book():
     assert s.positions[OTHER].quantity == 50 and "777" not in s.positions   # resolved markets are ignored
     assert (s.specs[YES].tick, s.specs[YES].min_size, s.specs[YES].size_step, s.specs[YES].min_notional) == (0.01, 5, 0.01, 1)
     assert not any(u == f"{CLOB}/book" and p["token_id"] == OTHER for u, p in v.session.calls)  # outside: not even quoted
+
+
+def test_positions_are_read_from_data_api_v2_page_by_page():
+    books = {YES: book(bids=[(0.28, 100)], asks=[(0.30, 100)])}
+    many = [row(YES, 200.0, 0.25, 0.29)] + [row(str(1000 + i), 1.0, 0.5, 0.5) for i in range(6)]
+    v = venue(books, many, None, paper_cash=0)
+    v.session.page_size = 3
+    s = v.snapshot(v.basket())
+    assert len(s.positions) == 7 and s.equity == pytest.approx(200 * 0.28 + 6 * 0.5)
+    urls = [u for u, _ in v.session.calls if "positions" in u]
+    assert urls == [f"{DATA}/v2/positions"] * 3                          # never the retired v1 endpoint
+    assert [p.get("cursor") for u, p in v.session.calls if "positions" in u] == [None, "3", "6"]
+
+
+def test_strings_and_v1_field_names_are_still_understood():
+    books = {YES: book(bids=[(0.28, 100)], asks=[(0.30, 100)])}
+    as_strings = {"token_id": YES, "current_size": "200", "avg_price": "0.25", "current_price": "0.29", "redeemable": False}
+    v1_names = {"asset": OTHER, "size": 50.0, "avgPrice": 0.5, "curPrice": 0.4, "redeemable": False}
+    s = (v := venue(books, [as_strings, v1_names], None)).snapshot(v.basket())
+    assert (s.positions[YES].quantity, s.positions[YES].avg_cost) == (200.0, 0.25)
+    assert (s.positions[OTHER].quantity, s.positions[OTHER].avg_cost) == (50.0, 0.5)
+    assert v.label(YES) == "Will it happen? [Yes]" and v.label(OTHER) == "token 999 [?]"
+
+
+def test_a_data_api_answer_that_cannot_be_trusted_stops_the_round():
+    books = {YES: book(bids=[(0.28, 100)], asks=[(0.30, 100)])}
+    v = venue(books, [], None)
+    v.session.get = lambda url, params=None, timeout=None: Resp([row(YES, 1.0, 0.2, 0.2)])   # bare list: not v2
+    with pytest.raises(RuntimeError, match="unexpected answer"):
+        v.snapshot({YES: 0.3})
+    stuck = {"data": [row(YES, 1.0, 0.2, 0.2)], "pagination": {"has_more": True, "next_cursor": "abc"}}
+    v.session.get = lambda url, params=None, timeout=None: Resp(stuck)                        # cursor ignored
+    with pytest.raises(RuntimeError, match="not advancing"):
+        v.snapshot({YES: 0.3})
+    v.session.get = lambda url, params=None, timeout=None: Resp({"data": [{"current_size": 1}], "pagination": {}})
+    with pytest.raises(RuntimeError, match="without a token id"):
+        v.snapshot({YES: 0.3})
+    log = []
+    Runner(v, Config(build_until="2027-01-01T00:00:00Z"), log=log.append).loop()              # the bot survives it
+    assert any(l.startswith("Error during the round") for l in log)
 
 
 def test_token_balance_overrides_a_lagging_data_api():
