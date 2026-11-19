@@ -456,3 +456,60 @@ def test_book_dir_is_kept_under_budget(tmp_path):
     left = sorted(f.name for f in (tmp_path / "book").glob("*.gz"))
     assert left == ["2026-11-18.jsonl.gz", "2026-11-19.jsonl.gz"]
     rec.writer.close()
+
+
+# ------------------------------------------------------------------ archive to object storage
+class FakeS3:
+    def __init__(self, corrupt=()):
+        self.objects, self.corrupt, self.uploads = {}, set(corrupt), []
+
+    def upload_file(self, path, bucket, key):
+        data = open(path, "rb").read()
+        self.uploads.append(key)
+        self.objects[(bucket, key)] = data[:-1] if key in self.corrupt else data
+
+    def head_object(self, Bucket, Key):
+        return {"ContentLength": len(self.objects[(Bucket, Key)])}
+
+    def download_file(self, bucket, key, path):
+        open(path, "wb").write(self.objects[(bucket, key)])
+
+
+def _day_files(root, days):
+    for sub, ext in (("book", ".jsonl.gz"), ("markets", ".json")):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+        for d in days:
+            (root / sub / f"{d}{ext}").write_bytes(f"{sub}{d}".encode() * 10)
+    (root / "trades").mkdir(exist_ok=True)
+    (root / "trades" / "0xc1.jsonl.gz").write_bytes(b"t" * 30)
+
+
+def test_offload_uploads_closed_days_and_frees_old_ones(tmp_path):
+    from book_recorder.offload import Offloader, fetch
+    days = ["2026-11-10", "2026-11-11", "2026-11-18", "2026-11-19"]
+    _day_files(tmp_path, days)
+    s3 = FakeS3()
+    off = Offloader(tmp_path, s3, "bk", "polymarket", keep_local_days=7, now=NOW)
+    res = off.upload()
+    assert res["uploaded"] == 7 and res["failed"] == 0            # 3 closed days x 2 + trades
+    assert ("bk", "polymarket/book/2026-11-19.jsonl.gz") not in s3.objects     # today stays local
+    assert off.prune_local() == ["book/2026-11-10.jsonl.gz", "book/2026-11-11.jsonl.gz"]
+    assert (tmp_path / "book" / "2026-11-18.jsonl.gz").exists()
+    # next night: nothing changed but the trades file
+    (tmp_path / "trades" / "0xc1.jsonl.gz").write_bytes(b"t" * 40)
+    again = Offloader(tmp_path, s3, "bk", "polymarket", now=NOW)
+    s3.uploads.clear()
+    assert again.upload()["uploaded"] == 1 and s3.uploads == ["polymarket/trades/0xc1.jsonl.gz"]
+    got = fetch(s3, "bk", "polymarket/", tmp_path / "research", ["2026-11-10"])
+    assert got == ["book/2026-11-10.jsonl.gz", "markets/2026-11-10.json"]
+    assert (tmp_path / "research" / "book" / "2026-11-10.jsonl.gz").read_bytes() == b"book2026-11-10" * 10
+
+
+def test_offload_never_deletes_what_the_bucket_does_not_hold(tmp_path):
+    from book_recorder.offload import Offloader
+    _day_files(tmp_path, ["2026-11-01"])
+    s3 = FakeS3(corrupt={"p/book/2026-11-01.jsonl.gz"})
+    off = Offloader(tmp_path, s3, "bk", "p/", keep_local_days=7, now=NOW)
+    assert off.upload()["failed"] == 1
+    assert off.prune_local() == []
+    assert (tmp_path / "book" / "2026-11-01.jsonl.gz").exists()

@@ -163,7 +163,7 @@ python -m book_recorder stats /var/lib/book-recorder/book/2026-11-19.jsonl.gz
 * Websocket market channel, the 100 most active markets by 24h volume (markets ending within 24 hours and books under 1,000 USDC of liquidity are skipped), 50 tokens per connection, reconnect with backoff, silent connections dropped after 2 minutes.
 * `book/<UTC day>.jsonl.gz`: every message exactly as received with its receive time, plus open/close markers so gaps are visible. The set is re-selected at midnight UTC with new connections opened before the old ones close, so each day file starts with full snapshots and can be replayed alone. `markets/<day>.json` lists the markets in force.
 * Polymarket resends a token's whole book after every trade. The first book of the day per connection and one every 10 minutes are kept as received; the others are stored as the levels that changed, without loss (`book_recorder/compact.py`), and replay rebuilds them.
-* `book/` is kept under 12 GB (`--max-gb`) by deleting the oldest days.
+* Closed days are archived every night to S3-compatible object storage (UpCloud), checked by size, and book days older than 7 days are then deleted on the server (`python -m book_recorder offload`, `deploy/book-offload.timer`, credentials in `/etc/book-recorder.env`). `python -m book_recorder fetch --dest data 2026-11-19` brings a day back on any machine. As a last resort `book/` is kept under 12 GB (`--max-gb`) by deleting the oldest days.
 * `trades/<condition id>.jsonl.gz`: Data API v2 trades (`condition=` filter, newest first, cursor pages), incremental, raw rows kept without the profile fields.
 * `book_recorder.replay` rebuilds L2 books and the trade tape from the files.
 * Below 2 GB of free disk recording pauses instead of filling the disk.

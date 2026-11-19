@@ -4,6 +4,8 @@
   markets  print the market set `record` would pick now, and exit
   trades   download historical trades (with wallets) from the Data API v2
   stats    summarise day files: event counts, tokens, disconnections, trades
+  offload  copy closed days to object storage, then delete old local book days (needs BOOK_S3_*)
+  fetch    download archived days from object storage (needs BOOK_S3_*)
 """
 import argparse
 import asyncio
@@ -85,6 +87,15 @@ def main(argv=None):
     t.add_argument("--days-back", type=float, default=30.0, help="first download goes back this far (default 30)")
     t.add_argument("--endpoint", default="/v2/trades")
 
+    o = sub.add_parser("offload", help="archive closed days to object storage")
+    o.add_argument("--out", required=True)
+    o.add_argument("--keep-local-days", type=int, default=7,
+                   help="keep this many days of books on the server once archived (default 7, -1 = never delete)")
+
+    fe = sub.add_parser("fetch", help="download archived days")
+    fe.add_argument("--dest", required=True)
+    fe.add_argument("days", nargs="+", help="UTC days, YYYY-MM-DD")
+
     s = sub.add_parser("stats", help="summarise day files")
     s.add_argument("files", nargs="+")
 
@@ -100,6 +111,19 @@ def main(argv=None):
         for f in a.files:
             print(json.dumps(stats(f), indent=1))
         return
+    if a.cmd in ("offload", "fetch"):
+        from .offload import Offloader, client_from_env, fetch
+        client, bucket, prefix = client_from_env()
+        if a.cmd == "fetch":
+            got = fetch(client, bucket, prefix, a.dest, a.days)
+            logging.info("%d files downloaded to %s", len(got), a.dest)
+            sys.exit(0 if got else 1)
+        off = Offloader(a.out, client, bucket, prefix, keep_local_days=a.keep_local_days)
+        res = off.upload()
+        deleted = off.prune_local()
+        logging.info("offload: %d uploaded (%.1f MB), %d unchanged, %d failed; %d local book days deleted",
+                     res["uploaded"], res["bytes"] / 1e6, res["skipped"], res["failed"], len(deleted))
+        sys.exit(1 if res["failed"] else 0)
     if a.cmd == "trades":
         d = TradeDownloader(a.out, partial(http_get, _session()), endpoint=a.endpoint)
         ids = a.market or recorded_markets(a.out, a.recorded_days)
