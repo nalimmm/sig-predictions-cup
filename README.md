@@ -149,6 +149,27 @@ python -m basket_exec --config ... --live --stop                                
 
 The Polymarket adapter is tested against canned API payloads only. It has not yet placed a real order: run it in dry run first, then live with a small `max_capital`. The honest limitations above still apply, and this is not investment advice.
 
+## Recording Polymarket order books: `book_recorder`
+
+Polymarket keeps no order book history, and the Smart pod's research (impact after a book sweep, wallet metaorders, book imbalance) needs one. `book_recorder/` records it on the server, with no key and no wallet:
+
+```
+python -m book_recorder markets                         # the 100 markets it would follow now
+python -m book_recorder record --out /var/lib/book-recorder   # the service (deploy/book-recorder.service)
+python -m book_recorder trades --out /var/lib/book-recorder   # daily, trades with wallets (deploy/book-trades.timer)
+python -m book_recorder stats /var/lib/book-recorder/book/2026-11-19.jsonl.gz
+```
+
+* Websocket market channel, the 100 most active markets by 24h volume (markets ending within 24 hours and books under 1,000 USDC of liquidity are skipped), 50 tokens per connection, reconnect with backoff, silent connections dropped after 2 minutes.
+* `book/<UTC day>.jsonl.gz`: every message exactly as received with its receive time, plus open/close markers so gaps are visible. The set is re-selected at midnight UTC with new connections opened before the old ones close, so each day file starts with full snapshots and can be replayed alone. `markets/<day>.json` lists the markets in force.
+* Polymarket resends a token's whole book after every trade. The first book of the day per connection and one every 10 minutes are kept as received; the others are stored as the levels that changed, without loss (`book_recorder/compact.py`), and replay rebuilds them.
+* `book/` is kept under 12 GB (`--max-gb`) by deleting the oldest days.
+* `trades/<condition id>.jsonl.gz`: Data API v2 trades (`condition=` filter, newest first, cursor pages), incremental, raw rows kept without the profile fields.
+* `book_recorder.replay` rebuilds L2 books and the trade tape from the files.
+* Below 2 GB of free disk recording pauses instead of filling the disk.
+
+Install on the server after `git pull`: `sudo deploy/install_book_recorder.sh`.
+
 ## Reproducing
 
 The charts need only Python 3.11+ and the pinned requirements:
