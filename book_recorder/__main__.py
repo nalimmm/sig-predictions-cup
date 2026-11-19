@@ -69,6 +69,10 @@ def main(argv=None):
     r.add_argument("--refresh-hours", type=float, default=0.0,
                    help="re-select markets every N hours as well as at midnight UTC (0 = midnight only)")
     r.add_argument("--min-free-gb", type=float, default=2.0, help="pause recording below this much free disk")
+    r.add_argument("--max-gb", type=float, default=12.0,
+                   help="keep book/ under this size by deleting the oldest days (default 12, 0 = never)")
+    r.add_argument("--full-book-seconds", type=float, default=600.0,
+                   help="store a full book per token at least this often, diffs in between (default 600)")
 
     m = sub.add_parser("markets", help="print the current selection")
     _selection_args(m)
@@ -109,7 +113,8 @@ def main(argv=None):
 
     from .ws import Recorder
     rec = Recorder(a.out, _selector(a), shard_size=a.shard_size, refresh_hours=a.refresh_hours,
-                   min_free_gb=a.min_free_gb)
+                   min_free_gb=a.min_free_gb, max_gb=a.max_gb,
+                   full_book_seconds=a.full_book_seconds)
 
     async def run():
         stop = asyncio.Event()

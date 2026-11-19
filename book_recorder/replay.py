@@ -21,6 +21,8 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
+from .compact import Expander
+
 
 def _inflate(data: bytes, chunk: int = 1 << 16) -> Iterator[bytes]:
     """Decompressed bytes of concatenated gzip members, up to the first corrupt byte if any."""
@@ -65,14 +67,23 @@ def iter_lines(path) -> Iterator[dict]:
 
 def iter_events(path, with_meta: bool = False) -> Iterator[dict]:
     """Polymarket messages, one dict each, with `_r` (receive ms) and `_c` (connection) added.
-    With `with_meta`, connection events are yielded too, as {"_r", "_c", "_e", ...}."""
+    With `with_meta`, connection events are yielded too, as {"_r", "_c", "_e", ...}.
+    Compacted books ("bd" lines) come back as full "book" events, marked "_diff": True."""
+    books = Expander()
     for line in iter_lines(path):
         if "m" in line:
             m = line["m"]
             for ev in (m if isinstance(m, list) else [m]):
                 if isinstance(ev, dict):
+                    if ev.get("event_type") == "book":
+                        books.full(line["c"], ev)
                     ev["_r"], ev["_c"] = line["r"], line["c"]
                     yield ev
+        elif "bd" in line:
+            ev = books.expand(line["c"], line["bd"])
+            if ev is not None:
+                ev["_r"], ev["_c"] = line["r"], line["c"]
+                yield ev
         elif with_meta and "e" in line:
             meta = {k: v for k, v in line.items() if k not in ("r", "c", "e")}
             yield {"_r": line["r"], "_c": line["c"], "_e": line["e"], **meta}
@@ -145,6 +156,7 @@ class Trade:
     size: float
     side: Optional[str]     # as sent by Polymarket ("BUY" / "SELL")
     fee_rate_bps: Optional[float]
+    tx: Optional[str] = None
 
 
 def _ts(v) -> Optional[int]:
@@ -191,8 +203,9 @@ class Books(dict):
         elif kind == "last_trade_price":
             t = Trade(recv_ms=ev.get("_r"), ts=ts, token=str(ev["asset_id"]), market=ev.get("market"),
                       price=float(ev["price"]), size=float(ev.get("size") or 0), side=ev.get("side"),
-                      fee_rate_bps=float(ev["fee_rate_bps"]) if ev.get("fee_rate_bps") not in (None, "") else None)
-            key = (t.token, t.ts, t.price, t.size, t.side)
+                      fee_rate_bps=float(ev["fee_rate_bps"]) if ev.get("fee_rate_bps") not in (None, "") else None,
+                      tx=ev.get("transaction_hash"))
+            key = (t.token, t.ts, t.price, t.size, t.side, t.tx)
             now = ev.get("_r") or 0
             while self._recent and next(iter(self._recent.values())) < now - self.dedupe_ms:
                 self._recent.popitem(last=False)

@@ -10,10 +10,14 @@ The raw row is kept so a field renamed or added by Polymarket is never lost. Run
 trades/_state.json remembers, per market, the newest trade time and the keys of the trades at that
 edge, and the download stops at the first page that only holds trades already known.
 
-Data API v2 conventions (as for /v2/positions, checked live on 2026-11-19): rows in
-{"data": [...], "pagination": {"has_more", "next_cursor"}}, next page with cursor=<next_cursor>,
-snake_case fields. The trades endpoint itself was not probed yet: ENDPOINT and the field names
-below are the expected ones, and anything unexpected raises instead of writing a silent partial.
+Data API v2 /v2/trades, probed live from the server on 2026-11-19:
+  - filters: condition=<condition id> (market= is rejected with 400), token=, user=, side=;
+    limit up to 1000; next page with cursor=<next_cursor>; offset= is rejected.
+  - no time filter at all (start/end/after/before... are silently ignored), newest first: a
+    backfill pages until it reaches a trade older than the target.
+  - rows: proxy_wallet, side, token_id, condition_id, size, price (numbers), timestamp (unix
+    seconds), transaction_hash, outcome, outcome_index, title, slug, event_slug, plus profile fields.
+Anything unexpected raises instead of writing a silent partial.
 """
 import gzip
 import json
@@ -70,12 +74,16 @@ def normalise(r: dict) -> dict:
     return t
 
 
+# Profile fields repeated on every row (bio, pictures): not trade data, and they dominate the bytes.
+DROP = ("bio", "profile_image", "profile_image_optimized", "icon", "profileImage", "profileImageOptimized")
+
+
 def key(t: dict) -> str:
     return "|".join(str(t.get(k)) for k in ("tx", "token", "wallet", "side", "price", "size", "ts"))
 
 
 class TradeDownloader:
-    def __init__(self, out, get: Callable[..., object], endpoint: str = ENDPOINT, limit: int = 500,
+    def __init__(self, out, get: Callable[..., object], endpoint: str = ENDPOINT, limit: int = 1000,
                  max_pages: int = 200, clock: Callable[[], float] = time.time):
         self.dir = Path(out) / "trades"
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -94,7 +102,7 @@ class TradeDownloader:
         floor = max(x for x in (newest, since, float("-inf")) if x is not None)
         fresh, seen, cursor = [], set(), None
         for _ in range(self.max_pages):
-            params = {"market": condition_id, "limit": self.limit}
+            params = {"condition": condition_id, "limit": self.limit}
             if cursor:
                 params["cursor"] = cursor
             page = self.get(self.url, **params)
@@ -104,7 +112,7 @@ class TradeDownloader:
             keys = [key(t) for t, _ in rows]
             if rows and all(k in seen for k in keys):
                 raise RuntimeError("Data API pagination is not advancing: trades would be duplicated")
-            older = 0
+            older, below_floor = 0, False
             for (t, raw), k in zip(rows, keys):
                 if k in seen or k in edge:
                     older += 1
@@ -112,13 +120,14 @@ class TradeDownloader:
                 seen.add(k)
                 if t["ts"] < floor:
                     older += 1
+                    below_floor = True
                     continue
                 fresh.append((t, raw, k))
             pagination = page.get("pagination") or {}
             cursor = pagination.get("next_cursor")
             if not pagination.get("has_more") or not cursor:
                 break
-            if rows and older == len(rows):          # a whole page of known trades: caught up
+            if below_floor or (rows and older == len(rows)):   # newest first: everything after is older
                 break
         else:
             log.warning("%s: stopped after %d pages, older trades not fetched", condition_id, self.max_pages)
@@ -127,7 +136,7 @@ class TradeDownloader:
             fresh.sort(key=lambda x: x[0]["ts"])
             with gzip.open(self.dir / f"{condition_id}.jsonl.gz", "ab") as f:
                 for t, raw, _ in fresh:
-                    f.write((json.dumps({"f": now, "t": t, "raw": raw}, separators=(",", ":")) + "\n").encode())
+                    f.write((json.dumps({"f": now, "t": t, "raw": {k: v for k, v in raw.items() if k not in DROP}}, separators=(",", ":")) + "\n").encode())
             top = fresh[-1][0]["ts"]
             if newest is None or top > newest:
                 newest = top
