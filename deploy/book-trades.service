@@ -1,0 +1,16 @@
+[Unit]
+Description=Download Polymarket trades (with wallets) for the recorded markets
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bot
+WorkingDirectory=/opt/sig-predictions-cup
+ExecStart=/usr/bin/python3 -m book_recorder trades --out /var/lib/book-recorder --recorded-days 2 --days-back 30
+StateDirectory=book-recorder
+Environment=PYTHONUNBUFFERED=1
+Nice=15
+CPUWeight=10
+IOWeight=10
+MemoryMax=400M
