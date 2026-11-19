@@ -4,3 +4,5 @@ matplotlib>=3.8
 pyyaml>=6.0
 py-clob-client>=0.34   # only for the Polymarket adapter
 pytest>=8.0            # only for the tests
+# book_recorder (order book recorder for the Smart pod)
+websockets>=10
