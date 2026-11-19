@@ -14,7 +14,7 @@ import pytest
 from book_recorder import markets as mk
 from book_recorder.replay import Books, iter_events, iter_lines, stats
 from book_recorder.store import DailyWriter
-from book_recorder.trades import TradeDownloader, recorded_markets
+from book_recorder.trades import TradeDownloader, iter_trades, recorded_markets
 from book_recorder.ws import Recorder
 
 NOW = datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)
@@ -312,9 +312,27 @@ def test_trades_download_is_incremental(tmp_path):
     assert d2.download("0xc1") == 2
     assert len(api.calls) == 2                                   # stopped at the first known page
     lines = list(iter_lines(tmp_path / "trades" / "0xc1.jsonl.gz"))
-    assert [l["t"]["tx"] for l in lines] == [f"0xt{i}" for i in range(7)]
-    assert lines[0]["t"]["wallet"] == "0xw0" and lines[0]["raw"]["transaction_hash"] == "0xt0"
+    assert [l["t"]["tx"] for l in lines] == ["0xt4", "0xt3", "0xt2", "0xt1", "0xt0", "0xt5", "0xt6"]
+    assert lines[4]["t"]["wallet"] == "0xw0" and lines[4]["raw"]["transaction_hash"] == "0xt0"
     assert "bio" not in lines[0]["raw"] and lines[0]["raw"]["pseudonym"] == "Some-Name"
+
+
+def test_trades_are_written_page_by_page_and_a_killed_run_is_redone(tmp_path):
+    api = DataAPI([trow(i, 1000 + i) for i in range(5)])
+    calls = {"n": 0}
+
+    def dies_on_page_3(url, **p):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise ConnectionError("killed")
+        return api(url, **p)
+    with pytest.raises(ConnectionError):
+        TradeDownloader(tmp_path, dies_on_page_3).download("0xc1")
+    path = tmp_path / "trades" / "0xc1.jsonl.gz"
+    assert len(list(iter_lines(path))) == 4                       # two pages already on disk
+    assert not (tmp_path / "trades" / "_state.json").exists()     # but the run is not recorded as done
+    assert TradeDownloader(tmp_path, api).download("0xc1") == 5
+    assert sorted(t["tx"] for t in iter_trades(path, dedupe=True)) == [f"0xt{i}" for i in range(5)]
 
 
 def test_trades_since_and_errors(tmp_path):

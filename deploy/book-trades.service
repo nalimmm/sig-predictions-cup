@@ -13,4 +13,4 @@ Environment=PYTHONUNBUFFERED=1
 Nice=15
 CPUWeight=10
 IOWeight=10
-MemoryMax=400M
+MemoryMax=300M
