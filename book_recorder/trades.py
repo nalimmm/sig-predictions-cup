@@ -84,7 +84,7 @@ def key(t: dict) -> str:
 
 class TradeDownloader:
     def __init__(self, out, get: Callable[..., object], endpoint: str = ENDPOINT, limit: int = 1000,
-                 max_pages: int = 200, clock: Callable[[], float] = time.time):
+                 max_pages: int = 500, clock: Callable[[], float] = time.time):
         self.dir = Path(out) / "trades"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.get, self.url, self.limit, self.max_pages, self.clock = get, DATA + endpoint, limit, max_pages, clock
@@ -96,55 +96,68 @@ class TradeDownloader:
 
     def download(self, condition_id: str, since: Optional[float] = None) -> int:
         """Fetch the market's trades newer than what is already stored (and than `since`, seconds).
-        Returns the number of new trades written."""
+        Returns the number of new trades written.
+
+        Rows are written page by page, so memory stays flat whatever the market's history (the
+        first run on the server pulled 414,000 trades). Pages come newest first, so a run writes
+        its trades newest first: sort by `t.ts` when reading. The state is saved once the run ends;
+        a run killed halfway is redone from the same point next time, which can repeat some rows
+        (`iter_trades(..., dedupe=True)` drops them)."""
         st = self.state.get(condition_id, {})
         newest, edge = st.get("newest_ts"), set(st.get("edge_keys", []))
         floor = max(x for x in (newest, since, float("-inf")) if x is not None)
-        fresh, seen, cursor = [], set(), None
-        for _ in range(self.max_pages):
-            params = {"condition": condition_id, "limit": self.limit}
-            if cursor:
-                params["cursor"] = cursor
-            page = self.get(self.url, **params)
-            if not isinstance(page, dict) or not isinstance(page.get("data"), list):
-                raise RuntimeError(f"unexpected answer from {self.url}: {str(page)[:200]}")
-            rows = [(normalise(r), r) for r in page["data"]]
-            keys = [key(t) for t, _ in rows]
-            if rows and all(k in seen for k in keys):
-                raise RuntimeError("Data API pagination is not advancing: trades would be duplicated")
-            older, below_floor = 0, False
-            for (t, raw), k in zip(rows, keys):
-                if k in seen or k in edge:
-                    older += 1
-                    continue
-                seen.add(k)
-                if t["ts"] < floor:
-                    older += 1
-                    below_floor = True
-                    continue
-                fresh.append((t, raw, k))
-            pagination = page.get("pagination") or {}
-            cursor = pagination.get("next_cursor")
-            if not pagination.get("has_more") or not cursor:
-                break
-            if below_floor or (rows and older == len(rows)):   # newest first: everything after is older
-                break
-        else:
-            log.warning("%s: stopped after %d pages, older trades not fetched", condition_id, self.max_pages)
-        if fresh:
-            now = int(self.clock() * 1000)
-            fresh.sort(key=lambda x: x[0]["ts"])
-            with gzip.open(self.dir / f"{condition_id}.jsonl.gz", "ab") as f:
-                for t, raw, _ in fresh:
-                    f.write((json.dumps({"f": now, "t": t, "raw": {k: v for k, v in raw.items() if k not in DROP}}, separators=(",", ":")) + "\n").encode())
-            top = fresh[-1][0]["ts"]
+        written, top, top_keys, prev_keys, cursor, f = 0, None, set(), set(), None, None
+        now = int(self.clock() * 1000)
+        try:
+            for _ in range(self.max_pages):
+                params = {"condition": condition_id, "limit": self.limit}
+                if cursor:
+                    params["cursor"] = cursor
+                page = self.get(self.url, **params)
+                if not isinstance(page, dict) or not isinstance(page.get("data"), list):
+                    raise RuntimeError(f"unexpected answer from {self.url}: {str(page)[:200]}")
+                rows = [(normalise(r), r) for r in page["data"]]
+                keys = [key(t) for t, _ in rows]
+                if rows and set(keys) <= prev_keys:
+                    raise RuntimeError("Data API pagination is not advancing: trades would be duplicated")
+                prev_keys = set(keys)
+                older, below_floor = 0, False
+                for (t, raw), k in zip(rows, keys):
+                    if k in edge:
+                        older += 1
+                        continue
+                    if t["ts"] < floor:
+                        older += 1
+                        below_floor = True
+                        continue
+                    if f is None:
+                        f = gzip.open(self.dir / f"{condition_id}.jsonl.gz", "ab")
+                    slim = {k2: v for k2, v in raw.items() if k2 not in DROP}
+                    f.write((json.dumps({"f": now, "t": t, "raw": slim}, separators=(",", ":")) + "\n").encode())
+                    written += 1
+                    if top is None or t["ts"] > top:
+                        top, top_keys = t["ts"], {k}
+                    elif t["ts"] == top:
+                        top_keys.add(k)
+                pagination = page.get("pagination") or {}
+                cursor = pagination.get("next_cursor")
+                if not pagination.get("has_more") or not cursor:
+                    break
+                if below_floor or (rows and older == len(rows)):   # newest first: everything after is older
+                    break
+            else:
+                log.warning("%s: stopped after %d pages, older trades not fetched", condition_id, self.max_pages)
+        finally:
+            if f is not None:
+                f.close()
+        if written:
             if newest is None or top > newest:
-                newest = top
-                edge = set()
-            edge |= {k for t, _, k in fresh if t["ts"] == newest}
+                newest, edge = top, top_keys
+            elif top == newest:
+                edge |= top_keys
             self.state[condition_id] = {"newest_ts": newest, "edge_keys": sorted(edge)}
             write_json(self.state_path, self.state)
-        return len(fresh)
+        return written
 
     def download_all(self, condition_ids: Iterable[str], since: Optional[float] = None) -> Dict[str, object]:
         """One bad market does not stop the others; the summary says which failed."""
@@ -175,7 +188,14 @@ def recorded_markets(out, days: int = 2, today: Optional[str] = None) -> List[st
     return ids
 
 
-def iter_trades(path) -> Iterable[dict]:
+def iter_trades(path, dedupe: bool = False) -> Iterable[dict]:
+    """Normalised trades of one market file, in file order (newest first within each run)."""
     from .replay import iter_lines
+    seen = set()
     for line in iter_lines(path):
+        if dedupe:
+            k = key(line["t"])
+            if k in seen:
+                continue
+            seen.add(k)
         yield line["t"]
