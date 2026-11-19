@@ -283,7 +283,8 @@ def test_selection_failure_is_retried_not_fatal(tmp_path):
 # ------------------------------------------------------------------ Data API v2 trades
 def trow(i, ts):
     return {"token_id": "11", "condition_id": "0xc1", "proxy_wallet": f"0xw{i % 3}", "side": "BUY",
-            "price": 0.5, "size": 10 + i, "timestamp": ts, "transaction_hash": f"0xt{i}", "outcome": "Yes"}
+            "price": 0.5, "size": 10 + i, "timestamp": ts, "transaction_hash": f"0xt{i}", "outcome": "Yes",
+            "bio": "long text", "profile_image": "https://example.invalid/p.png", "pseudonym": "Some-Name"}
 
 
 class DataAPI:
@@ -304,7 +305,7 @@ def test_trades_download_is_incremental(tmp_path):
     api = DataAPI([trow(i, 1000 + i) for i in range(5)])
     d = TradeDownloader(tmp_path, api, clock=lambda: T0)
     assert d.download("0xc1") == 5
-    assert all(c["market"] == "0xc1" for c in api.calls) and api.calls[1]["cursor"] == "2"
+    assert all(c["condition"] == "0xc1" for c in api.calls) and api.calls[1]["cursor"] == "2"
     api.rows += [trow(5, 1005), trow(6, 1005)]
     api.calls.clear()
     d2 = TradeDownloader(tmp_path, api, clock=lambda: T0)        # a later run, state from disk
@@ -313,12 +314,14 @@ def test_trades_download_is_incremental(tmp_path):
     lines = list(iter_lines(tmp_path / "trades" / "0xc1.jsonl.gz"))
     assert [l["t"]["tx"] for l in lines] == [f"0xt{i}" for i in range(7)]
     assert lines[0]["t"]["wallet"] == "0xw0" and lines[0]["raw"]["transaction_hash"] == "0xt0"
+    assert "bio" not in lines[0]["raw"] and lines[0]["raw"]["pseudonym"] == "Some-Name"
 
 
 def test_trades_since_and_errors(tmp_path):
     api = DataAPI([trow(i, 1000 + i) for i in range(5)])
     d = TradeDownloader(tmp_path, api)
     assert d.download("0xc1", since=1003) == 2
+    assert len(api.calls) == 2              # newest first: stops at the first page reaching the target
     bad = TradeDownloader(tmp_path, lambda url, **p: {"error": "gone"})
     res = bad.download_all(["0xc2"])
     assert res["0xc2"].startswith("error: RuntimeError")
@@ -374,3 +377,64 @@ def test_recorder_with_the_real_websockets_library(tmp_path):
     assert pings
     s = stats(tmp_path / "book" / "2026-11-19.jsonl.gz")
     assert s["events"] == {"book": 4, "last_trade_price": 1} and s["connection_events"]["open"] == 1
+
+
+# ------------------------------------------------------------------ book compaction and disk budget
+def big_book(asset, bump=0, n=40, ts=1763553600000):
+    bids = [{"price": f"{0.40 - i / 100:.2f}", "size": str(100 + i)} for i in range(n // 2)]
+    asks = [{"price": f"{0.41 + i / 100:.2f}", "size": str(200 + i)} for i in range(n // 2)]
+    asks[0]["size"] = str(200 - bump)              # a trade ate part of the best ask
+    if bump >= 50:
+        asks.pop(0)                                 # ... or all of it
+    return {"event_type": "book", "asset_id": asset, "market": "0xc1", "timestamp": str(ts + bump),
+            "hash": f"h{bump}", "bids": bids, "asks": asks}
+
+
+def test_repeated_books_are_stored_as_diffs_and_rebuilt_exactly(tmp_path):
+    clock = Clock(T0)
+    rec = Recorder(tmp_path, selection(1), clock=clock, full_book_seconds=600)
+    sent = [big_book("11", 0), big_book("11", 10), big_book("11", 20), big_book("11", 60)]
+    rec.record("s0g1", json.dumps([sent[0], dict(TRADE)]))          # snapshot frame: a list
+    for b in sent[1:]:
+        clock.t += 1
+        rec.record("s0g1", json.dumps(b))
+    clock.t += 601                                                   # time for a full book again
+    rec.record("s0g1", json.dumps(big_book("11", 70)))
+    rec.writer.close()
+    path = tmp_path / "book" / "2026-11-19.jsonl.gz"
+    lines = list(iter_lines(path))
+    assert [("bd" in l, "m" in l) for l in lines] == [(False, True)] + [(True, False)] * 3 + [(False, True)]
+    assert lines[1]["bd"]["asks"] == [["0.41", "190"]]
+    assert lines[3]["bd"]["asks"] == [["0.41", "0"]]
+    books = [e for e in iter_events(path) if e["event_type"] == "book"]
+    norm = lambda side: sorted((l["price"], l["size"]) for l in side)
+    for got, want in zip(books, sent + [big_book("11", 70)]):
+        assert norm(got["bids"]) == norm(want["bids"]) and norm(got["asks"]) == norm(want["asks"])
+        assert got["hash"] == want["hash"] and got["timestamp"] == want["timestamp"]
+    assert len(lines[1]["bd"]["bids"]) == 0 and len(json.dumps(lines[1])) < len(json.dumps(sent[1])) / 5
+    b = Books()
+    for e in books:
+        b.apply(e)
+    assert b["11"].best_ask() == 0.42
+
+
+def test_compaction_restarts_each_day_so_day_files_stand_alone(tmp_path):
+    clock = Clock(T0 + 11.99 * 3600)
+    rec = Recorder(tmp_path, selection(1), clock=clock)
+    rec.record("s0g1", json.dumps(big_book("11", 0)))
+    clock.t = T0 + 12.01 * 3600
+    rec.record("s0g1", json.dumps(big_book("11", 10)))               # old connection after midnight
+    rec.writer.close()
+    day2 = list(iter_lines(tmp_path / "book" / "2026-11-20.jsonl.gz"))
+    assert "m" in day2[0]
+    assert [e["hash"] for e in iter_events(tmp_path / "book" / "2026-11-20.jsonl.gz")] == ["h10"]
+
+
+def test_book_dir_is_kept_under_budget(tmp_path):
+    rec = Recorder(tmp_path, selection(1), clock=Clock(T0), max_gb=2e-9 * 1000)   # 2 kB budget
+    for day in ("2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19"):
+        (tmp_path / "book" / f"{day}.jsonl.gz").write_bytes(b"x" * 900)
+    rec._prune()
+    left = sorted(f.name for f in (tmp_path / "book").glob("*.gz"))
+    assert left == ["2026-11-18.jsonl.gz", "2026-11-19.jsonl.gz"]
+    rec.writer.close()

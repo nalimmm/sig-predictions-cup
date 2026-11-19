@@ -14,6 +14,10 @@ message:
 
   {"r": 1763510400123, "c": "s0g3", "m": <the message as sent by Polymarket>}
 
+except repeated "book" snapshots, stored losslessly as the levels that changed (see compact.py):
+
+  {"r": ..., "c": "s0g3", "bd": {"asset_id", "market", "timestamp", "hash", "bids": [[p, s]], "asks": [...]}}
+
 and one line per connection event, so gaps are visible in the data instead of silently missing:
 
   {"r": ..., "c": "s0g3", "e": "open" | "close" | "subscribe" | "markets" | "disk_low" | "disk_ok", ...}
@@ -27,6 +31,7 @@ Robustness:
   - the market set is re-selected at each UTC midnight (and every `refresh_hours` if set). The new
     connections are opened *before* the old ones are closed, so a rotation leaves no gap, and each
     day file starts with fresh "book" snapshots of every token, so a day file can be replayed alone;
+  - the book/ directory is kept under `max_gb` by deleting the oldest day files (never today's);
   - below `min_free_gb` of free disk, messages are dropped (with a "disk_low" marker) instead of
     filling the disk and taking the trading services down with it.
 """
@@ -38,6 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from .compact import Compactor
 from .markets import asset_ids
 from .store import DailyWriter, free_gb, utc_day, write_json
 
@@ -122,12 +128,14 @@ class Recorder:
     def __init__(self, out, select: Callable[[], List[dict]], connect: Callable = default_connect,
                  url: str = WS_URL, shard_size: int = 50, refresh_hours: float = 0.0,
                  ping_seconds: float = 10.0, stale_seconds: float = 120.0, max_backoff: float = 60.0,
-                 min_free_gb: float = 2.0, ready_timeout: float = 30.0, stats_seconds: float = 300.0,
+                 min_free_gb: float = 2.0, max_gb: float = 12.0, full_book_seconds: float = 600.0, ready_timeout: float = 30.0, stats_seconds: float = 300.0,
                  clock: Callable[[], float] = time.time, sleep=asyncio.sleep, writer: DailyWriter = None):
         self.out = Path(out)
         self.select, self.connect, self.url = select, connect, url
         self.shard_size, self.refresh_hours = shard_size, refresh_hours
         self.ping_seconds, self.stale_seconds, self.max_backoff = ping_seconds, stale_seconds, max_backoff
+        self.max_gb, self.compactor = max_gb, Compactor(full_book_seconds)
+        self._last_prune = float("-inf")
         self.min_free_gb, self.ready_timeout, self.stats_seconds = min_free_gb, ready_timeout, stats_seconds
         self.clock, self.sleep = clock, sleep
         self.writer = writer or DailyWriter(self.out, "book", clock=clock)
@@ -145,12 +153,28 @@ class Recorder:
         if self.disk_low:
             self.dropped += 1
             return
-        raw = raw.strip()
-        if raw and raw[0] in "{[":
-            line = '{"r":%d,"c":"%s","m":%s}' % (self._ms(), cid, raw)
-        else:                                   # a text answer such as "INVALID OPERATION"
-            line = json.dumps({"r": self._ms(), "c": cid, "x": raw[:1000]})
-        self.writer.write(line)
+        raw, ms = raw.strip(), self._ms()
+        if not raw or raw[0] not in "{[":       # a text answer such as "INVALID OPERATION"
+            self.writer.write(json.dumps({"r": ms, "c": cid, "x": raw[:1000]}))
+            return
+        if '"book"' not in raw:                 # the common case: written as received, not parsed
+            self.writer.write('{"r":%d,"c":"%s","m":%s}' % (ms, cid, raw))
+            return
+        try:
+            msg = json.loads(raw)
+        except ValueError:
+            self.writer.write(json.dumps({"r": ms, "c": cid, "x": raw[:1000]}))
+            return
+        events = msg if isinstance(msg, list) else [msg]
+        out = []
+        for ev in events:
+            d = self.compactor.encode(cid, ev, ms) if isinstance(ev, dict) and ev.get("event_type") == "book" else None
+            out.append(("bd", d) if d is not None else ("m", ev))
+        if all(k == "m" for k, _ in out):
+            self.writer.write('{"r":%d,"c":"%s","m":%s}' % (ms, cid, raw))
+            return
+        for k, v in out:                        # one line per event, same receive time
+            self.writer.write(json.dumps({"r": ms, "c": cid, k: v}, separators=(",", ":")))
 
     def event(self, cid: str, kind: str, **fields):
         if self.disk_low and kind not in ("disk_low", "disk_ok"):
@@ -214,6 +238,23 @@ class Recorder:
             self.event("main", "disk_ok", free_gb=round(free, 2), dropped=self.dropped)
             log.warning("%.1f GB free again: recording resumed (%d messages dropped)", free, self.dropped)
 
+    def _prune(self, every: float = 3600.0):
+        """Keep book/ under max_gb: delete the oldest day files, never the one being written."""
+        if not self.max_gb or self.clock() - self._last_prune < every:
+            return
+        self._last_prune = self.clock()
+        files = sorted(self.writer.dir.glob("*.jsonl.gz"))
+        today = self.writer.path(utc_day(self.clock()))
+        total = sum(f.stat().st_size for f in files)
+        for f in files:
+            if total <= self.max_gb * 1e9 or f == today:
+                break
+            size = f.stat().st_size
+            f.unlink()
+            total -= size
+            self.event("main", "pruned", file=f.name, gb=round(size / 1e9, 3))
+            log.warning("book/ over %.0f GB: deleted %s", self.max_gb, f.name)
+
     # ------------------------------------------------------------ main loop
     async def run(self, stop: Optional[asyncio.Event] = None, tick: float = 5.0):
         stop = stop or asyncio.Event()
@@ -222,6 +263,7 @@ class Recorder:
             while not stop.is_set():
                 now = self.clock()
                 self._check_disk()
+                self._prune()
                 due = day != utc_day(now) or now >= next_refresh
                 if due and now >= retry_at:
                     if await self.rotate():
@@ -231,8 +273,8 @@ class Recorder:
                         retry_at = self.clock() + (300 if self.shards else 60)
                 if self.clock() - last_stats >= self.stats_seconds:
                     last_stats = self.clock()
-                    log.info("%d lines, %.1f MB raw today so far in this process, %s",
-                             self.writer.lines, self.writer.bytes / 1e6,
+                    log.info("%d lines, %.1f MB written uncompressed by this process, books full/diff %d/%d, %s",
+                             self.writer.lines, self.writer.bytes / 1e6, self.compactor.full, self.compactor.diffs,
                              {s.cid: s.messages for s in self.shards})
                 try:
                     await asyncio.wait_for(stop.wait(), tick)
