@@ -6,3 +6,4 @@ py-clob-client>=0.34   # only for the Polymarket adapter
 pytest>=8.0            # only for the tests
 # book_recorder (order book recorder for the Smart pod)
 websockets>=10
+boto3>=1.26            # only for book_recorder offload/fetch (object storage)
