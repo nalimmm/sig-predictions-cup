@@ -246,3 +246,35 @@ def test_cli_backtest_and_report(tmp_path, capsys):
     assert "Signaux S1 : 1" in out and "1 trades fermés" in out
     smart_main(["report", str(tmp_path / "bt"), "--json"])
     assert json.loads(capsys.readouterr().out)["closed_trades"] == 1
+
+
+def test_study_measures_reversion_fills_and_trade_signs(tmp_path, capsys):
+    t = T0 + 30 * 60000
+    lines = happy_path() + [book(t + 70 * 60000, A, 0.50, 0.51)]
+    write_day(tmp_path / "data", lines)
+    smart_main(["study", "--data", str(tmp_path / "data"), "--days", DAY, "--out", str(tmp_path / "st")])
+    s = json.loads(capsys.readouterr().out)
+    blk = s["sweeps_s1_with_filters"]
+    assert blk["n"] == 1 and blk["reverted"]["300s"]["mean"] == pytest.approx(0.818, abs=0.001)
+    paper = blk["paper"]["latence_2s"]
+    assert paper["filled"] == 1 and paper["states"] == {"closed_target": 1} and paper["mean_pnl_cents"] == 3.0
+    assert blk["paper"]["latence_7s"]["states"] == {"unfilled": 1}      # placed after the trade through
+    assert s["by_flow_after_(s1_with_filters)"]["suivi"]["n"] == 0
+    assert s["side_check"]["sell_at_or_below_bid"] >= 1 and s["side_check"]["trades"] == 5
+    ev = [json.loads(l) for l in (tmp_path / "st" / "sweeps.jsonl").read_text().splitlines()]
+    assert len(ev) == 1 and ev[0]["mids"]["3600"] == pytest.approx(0.505)
+
+
+def test_study_stylised_facts_fold_both_tokens(tmp_path):
+    from smart.study import Study
+    lines = [book(T0, A, 0.50, 0.51), book(T0 + 1, B, 0.49, 0.50)]
+    for i in range(300):                       # persistent flow: runs of 10 buys of YES, 10 buys of NO
+        yes = (i // 10) % 2 == 0
+        lines.append(trade(T0 + 1000 + i * 100, A if yes else B, 0.51 if yes else 0.50, 10, "BUY"))
+    write_day(tmp_path / "data", lines)
+    st = Study(tmp_path / "data")
+    for ev in replay(tmp_path / "data" / "book", [DAY]):
+        st.on_event(ev)
+    f = st.stylised()
+    assert f["markets"] == 1 and f["trades"] == 300 and f["share_buys"] == 0.5
+    assert f["C"][1] == pytest.approx(0.8, abs=0.02) and f["C"][10] < -0.9

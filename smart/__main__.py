@@ -3,6 +3,7 @@
   paper       follow the recorder's live day file and trade S1 on paper (the service). No order
               is ever sent: this package has no live mode.
   backtest    run the same engine over recorded days, into a separate journal
+  study       measure what happens after sweeps on recorded days (no strategy, no money)
   report      summarise a journal directory
   clear-halt  restart a pod halted by a circuit breaker (the user's decision, never automatic)
 """
@@ -46,6 +47,11 @@ def main(argv=None):
     b.add_argument("--days", required=True, help="2026-11-19..2026-11-21 or a comma list")
     b.add_argument("--out", required=True, help="journal directory for this run (emptied first)")
     b.add_argument("--config")
+    st = sub.add_parser("study")
+    st.add_argument("--data", default="/var/lib/book-recorder")
+    st.add_argument("--days", required=True)
+    st.add_argument("--out", required=True, help="summary.json and sweeps.jsonl go here")
+    st.add_argument("--config")
     r = sub.add_parser("report")
     r.add_argument("journal")
     r.add_argument("--json", action="store_true")
@@ -58,6 +64,16 @@ def main(argv=None):
     if a.cmd == "report":
         s = summary(read(a.journal))
         print(json.dumps(s, indent=1) if a.json else render(s))
+        return
+
+    if a.cmd == "study":
+        from .study import run as study_run
+        t0 = time.time()
+        s = study_run(a.data, _days(a.days), a.out, _config(a.config),
+                      progress=lambda x: log.info("%d events, %d sweeps, %s", x.n_events, len(x.events),
+                                                  x.now and utc_day(x.now)))
+        log.info("done in %.0f s", time.time() - t0)
+        print(json.dumps(s, indent=1))
         return
 
     if a.cmd == "clear-halt":
