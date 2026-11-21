@@ -1,0 +1,21 @@
+[Unit]
+Description=Smart pod, signal S1 on paper (reads the book recorder's files, never sends an order)
+After=book-recorder.service
+Wants=book-recorder.service
+
+[Service]
+User=bot
+WorkingDirectory=/opt/sig-predictions-cup
+ExecStart=/usr/bin/python3 -m smart paper --data /var/lib/book-recorder --out /var/lib/smart
+# /var/lib/smart holds journal/<day>.jsonl and state.json (virtual NAV, positions, breakers)
+StateDirectory=smart
+Restart=always
+RestartSec=30
+Environment=PYTHONUNBUFFERED=1
+# No secret on purpose: this service has no way to trade for real.
+Nice=5
+CPUWeight=50
+MemoryMax=300M
+
+[Install]
+WantedBy=multi-user.target

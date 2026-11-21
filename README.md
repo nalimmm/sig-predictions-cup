@@ -170,6 +170,27 @@ python -m book_recorder stats /var/lib/book-recorder/book/2026-11-19.jsonl.gz
 
 Install on the server after `git pull`: `sudo deploy/install_book_recorder.sh`.
 
+## Smart pod, first strategy on paper: `smart`
+
+Signal S1 of the Smart pod design note: after a sweep of the book that carries no news, the price overshoots its permanent impact and part of it comes back (Bouchaud, Farmer and Lillo 2008, transient impact). `smart/` trades it **on paper only**: the package has no live mode and the service holds no key.
+
+```
+python -m smart backtest --days 2026-11-19..2026-11-21 --out /tmp/bt   # same engine over recorded days
+python -m smart paper                                                   # the service (deploy/smart-paper.service)
+python -m smart report /var/lib/smart/journal                           # signal study and paper P&L
+python -m smart clear-halt                                              # restart after a circuit breaker
+```
+
+* No second websocket: the engine reads the recorder's day files, the live one included (flushed every 5 seconds), so the backtest and the paper trader share one code path.
+* Trigger: within 60 s the mid of a token falls by more than 3 local standard deviations (one-minute changes over the last hour, at least 2 ticks) while aggressive selling hit at least 2 price levels for 50 USDC or more. Long only: a sweep that pushes YES up is a fall of NO.
+* Filters: price between 0.05 and 0.95, no entry within 24 hours of the end date, spread of 10 ticks at most, no big move on a sibling market of the same event in the last 2 minutes.
+* Action: passive bid one tick above the new best bid, placed 2 s after the signal and checked again then, cancelled after 5 minutes. Exit: take-profit ask at half the fall recovered, or a sale into the bids after 30 minutes, or if the bid falls under half the entry price.
+* Fills: only when the market trades through our price, never on a touch. Takers pay the market fee.
+* Risk on a virtual 100 USDC: 3 % per order, 10 % per market, 20 % per event, 50 % gross, 25 % for S1, 20 % of the bid depth within 2 ticks, 1 % of the 24 h volume. Breakers: -5 % in a day stops entries until 00:00 UTC; -15 % from the high, a value under 60 USDC or more than 30 orders a minute halt the pod until `clear-halt`; a feed older than 10 s blocks entries.
+* `journal/<day>.jsonl`: every signal (traded or not, with the reason), order, fill, exit and the value every 5 minutes, plus where the mid stood 1, 5, 15, 30 and 60 minutes after each signal, which is the study the design note asks for before any real money (mean return over twice the round trip cost on at least 200 events).
+
+Install on the server after `git pull`: `sudo deploy/install_smart_paper.sh`.
+
 ## Reproducing
 
 The charts need only Python 3.11+ and the pinned requirements:
