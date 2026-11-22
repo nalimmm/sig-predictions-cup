@@ -42,7 +42,8 @@ from .s1 import infer_tick
 @dataclass
 class MMConfig:
     quote_usdc: float = 3.0             # capital per quote (3 % of 100)
-    max_inventory_usdc: float = 10.0    # per market and per side (10 % of 100)
+    max_inventory_usdc: float = 10.0    # per market: the most the open position can lose (10 % of 100)
+    stop_loss_usdc: float = 5.0         # per market: past this loss at mid, only quote the side that reduces
     half_spread_ticks: float = 1.0      # minimum distance from fair to each quote
     skew_ticks: float = 2.0             # shift of fair at full inventory
     improve: bool = True                # step one tick inside the best price when there is room
@@ -72,6 +73,8 @@ class Quoter:
     end_ms: Optional[float]
     inv: float = 0.0                    # shares of YES, negative = short YES (long NO)
     cash: float = 0.0
+    avg: float = 0.0                    # average entry price of the open position
+    reduce_only: bool = False           # set for good once the market has lost stop_loss_usdc
     bid: Optional[float] = None         # live quotes
     ask: Optional[float] = None
     bid_sz: float = 0.0
@@ -186,6 +189,12 @@ class MMSim:
         self.protect(q)
 
     def fill(self, q: Quoter, side: str, price: float, shares: float):
+        before, signed = q.inv, (shares if side == "BUY" else -shares)
+        after = before + signed
+        if before * signed >= 0:                    # opening or adding: weighted entry price
+            q.avg = (abs(before) * q.avg + shares * price) / abs(after)
+        elif before * after < 0:                    # flipped through zero: the rest opens at this price
+            q.avg = price
         if side == "BUY":
             q.inv += shares
             q.cash -= shares * price
@@ -277,9 +286,13 @@ class MMSim:
             return
         q.next_quote = self.now + int(cfg.requote_s * 1000)
         tick = b.tick or infer_tick(list(b.bids)[:20] + list(b.asks)[:20])
-        max_long = cfg.max_inventory_usdc / max(mid, 0.01)
-        max_short = cfg.max_inventory_usdc / max(1 - mid, 0.01)
-        frac = q.inv / max_long if q.inv >= 0 else q.inv / max_short
+        # worst-case loss of the open position, at its entry price: the cap does not grow when
+        # the price runs against us (a cap at the current mid let the simulator add to a loser)
+        risk = q.inv * q.avg if q.inv >= 0 else -q.inv * (1 - q.avg)
+        room = max(cfg.max_inventory_usdc - risk, 0.0)
+        frac = (1 if q.inv >= 0 else -1) * min(risk / cfg.max_inventory_usdc, 1.0)
+        if not q.reduce_only and q.cash + q.inv * mid <= -cfg.stop_loss_usdc:
+            q.reduce_only = True
         fair = mid - cfg.skew_ticks * tick * frac
         h = cfg.half_spread_ticks * tick
         my_bid = math.floor((fair - h) / tick + 1e-9) * tick
@@ -290,7 +303,14 @@ class MMSim:
         my_bid, my_ask = round(my_bid, 6), round(my_ask, 6)
         late = q.end_ms is not None and q.end_ms - self.now < cfg.min_hours_left * 3.6e6
         qs = cfg.quote_usdc / max(min(mid, 1 - mid), 0.05)      # same share count on both sides
-        bsz, asz = min(qs, max_long - q.inv), min(qs, max_short + q.inv)
+        if q.inv >= 0:                              # a bid adds to a long, an ask reduces it then may open a short
+            bsz = min(qs, room / max(my_bid, 0.01))
+            asz = min(qs, q.inv + cfg.max_inventory_usdc / max(1 - my_ask, 0.01))
+        else:
+            bsz = min(qs, -q.inv + cfg.max_inventory_usdc / max(my_bid, 0.01))
+            asz = min(qs, room / max(1 - my_ask, 0.01))
+        if late or q.reduce_only:                   # never open or flip: at most flatten
+            bsz, asz = min(bsz, max(-q.inv, 0.0)), min(asz, max(q.inv, 0.0))
         ok_bid = (not late or q.inv < 0) and cfg.min_price <= my_bid <= cfg.max_price and bsz >= cfg.min_shares \
             and self.now >= q.pull_bid_until
         ok_ask = (not late or q.inv > 0) and cfg.min_price <= my_ask <= cfg.max_price and asz >= cfg.min_shares \
@@ -330,7 +350,7 @@ class MMSim:
                 "pnl_per_day_usdc": round((q.cash + q.inv * liq) / days, 4) if days else None,
                 "max_drawdown_usdc": round(mdd, 4),
                 "max_long_shares": round(q.max_long, 1), "max_short_shares": round(q.max_short, 1),
-                "pulls": q.pulls, "quote_updates": q.quote_updates,
+                "stopped": q.reduce_only, "pulls": q.pulls, "quote_updates": q.quote_updates,
                 "hours_two_sided": round(q.quoted_s / 3600, 1),
                 **{f"fill_markout_{h}s_c": mo(h) for h in self.markouts_s},
                 "buy_markout_300s_c": mo(300, "BUY"), "sell_markout_300s_c": mo(300, "SELL")}

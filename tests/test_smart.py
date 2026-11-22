@@ -378,3 +378,18 @@ def test_mm_stops_opening_near_the_end_date(tmp_path):
     for ev in replay(tmp_path / "data" / "book", [DAY]):
         sim.on_event(ev)
     assert sim.q[A].fills == [] and sim.q[A].bid is None
+
+
+def test_mm_does_not_add_to_a_short_while_the_price_runs_against_it_then_stops(tmp_path):
+    # the market climbs from 0.80 to 0.95 and lifts our ask at every step
+    lines, t = [], T0
+    for i in range(16):
+        b = round(0.80 + 0.01 * i, 2)
+        lines += wide(t, b, round(b + 0.05, 2)) + wide(t + 5000, b, round(b + 0.05, 2))
+        lines += [trade(t + 10000, A, round(b + 0.07, 2), 500, "BUY")]
+        t += 200000
+    lines += wide(t, 0.95, 0.99)
+    sim, q, r = mm_run(tmp_path, lines, sweep_usdc=1e9, sweep_ticks=99, max_price=0.99)
+    assert q.inv < 0
+    assert -q.inv * (1 - q.avg) <= 10.0 + 1e-6          # the worst case of the short never passes the cap
+    assert r["stopped"] and q.cash + q.inv * q.last_mid > -10.0
