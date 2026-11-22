@@ -320,3 +320,61 @@ def test_sig_cycle_replay_uses_past_hours_only_and_marks_open_cycles():
     assert r["cycles"] == 2 and r["wins"] == 1 and r["open"] == 1
     assert r["ret"][0] == pytest.approx(0.5) and r["open_mark_ret"][0] == pytest.approx(-0.5)
     assert scan_token(prints[:60])["x0.60_x1.50"]["cycles"] == 0   # not enough history: no bid
+
+
+def wide(t, bid, ask):
+    """Books of YES and NO around a wide spread."""
+    return [book(t, A, bid, ask), book(t + 1, B, round(1 - ask, 2), round(1 - bid, 2))]
+
+
+def mm_run(tmp_path, lines, **cfg):
+    from smart.mm import MMConfig, MMSim
+    write_day(tmp_path / "data", lines)
+    sim = MMSim(tmp_path / "data", ["m"], MMConfig(**cfg))
+    for ev in replay(tmp_path / "data" / "book", [DAY]):
+        sim.on_event(ev)
+    q = sim.q[A]
+    return sim, q, sim.result(q, 1.0)
+
+
+def test_mm_quotes_inside_a_wide_spread_and_earns_it_on_a_round_trip(tmp_path):
+    lines = wide(T0, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50)
+    lines += [trade(T0 + 10000, A, 0.40, 100, "SELL")]              # prints under our 0.41 bid: we buy
+    lines += wide(T0 + 20000, 0.40, 0.50) + wide(T0 + 25000, 0.40, 0.50)
+    lines += [trade(T0 + 30000, B, 0.50, 100, "BUY")]               # buys NO at 0.50 = sells YES at 0.50: not through our ask
+    lines += [trade(T0 + 40000, A, 0.50, 100, "BUY")]               # prints above our ask: we sell
+    lines += wide(T0 + 50000, 0.40, 0.50)
+    sim, q, r = mm_run(tmp_path, lines, sweep_usdc=1e9)
+    assert [(f["side"], f["price"]) for f in q.fills][0] == ("BUY", 0.41)
+    assert q.fills[1]["side"] == "SELL" and q.fills[1]["price"] in (0.48, 0.49)     # skewed down while long
+    assert r["round_trip_shares"] > 0 and r["spread_captured_usdc"] > 0 and r["pnl_if_liquidated_usdc"] > 0
+
+
+def test_mm_stays_behind_a_one_tick_spread_and_is_not_filled_by_prints_at_the_best(tmp_path):
+    lines = wide(T0, 0.40, 0.41) + wide(T0 + 5000, 0.40, 0.41)       # one tick spread: no room inside
+    lines += [trade(T0 + 10000, A, 0.40, 100, "SELL"), trade(T0 + 11000, A, 0.41, 100, "BUY")]
+    sim, q, r = mm_run(tmp_path, lines, sweep_usdc=1e9)
+    assert (q.bid, q.ask) == (0.39, 0.42) and q.fills == []
+
+
+def test_mm_pulls_the_bid_during_a_sweep_and_respects_the_inventory_cap(tmp_path):
+    lines = wide(T0, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50)
+    lines += [trade(T0 + 10000 + i, A, 0.40, 400, "SELL") for i in range(3)]       # 480 USDC of selling
+    lines += wide(T0 + 12000, 0.40, 0.50) + wide(T0 + 15000, 0.40, 0.50)
+    sim, q, r = mm_run(tmp_path, lines)
+    assert len(q.fills) == 1 and q.bid is None and q.pulls == 1      # hit once, then out of the way
+    lines = wide(T0, 0.40, 0.50)
+    for i in range(1, 40):                                           # sellers keep coming, slowly
+        lines += wide(T0 + i * 100000, 0.40, 0.50) + [trade(T0 + i * 100000 + 50000, A, 0.39, 100, "SELL")]
+    sim, q, r = mm_run(tmp_path / "b", lines, sweep_usdc=1e9)
+    assert 0 < q.inv <= 10.0 / 0.45 + 1e-6 and q.inv * 0.45 <= 10.5  # never more than 10 USDC long
+
+
+def test_mm_stops_opening_near_the_end_date(tmp_path):
+    from smart.mm import MMConfig, MMSim
+    lines = wide(T0, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50) + [trade(T0 + 10000, A, 0.39, 100, "SELL")]
+    write_day(tmp_path / "data", lines, markets=[market(end="2026-11-20T12:00:00+00:00")])
+    sim = MMSim(tmp_path / "data", ["m"], MMConfig())
+    for ev in replay(tmp_path / "data" / "book", [DAY]):
+        sim.on_event(ev)
+    assert sim.q[A].fills == [] and sim.q[A].bid is None
