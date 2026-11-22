@@ -278,3 +278,45 @@ def test_study_stylised_facts_fold_both_tokens(tmp_path):
     f = st.stylised()
     assert f["markets"] == 1 and f["trades"] == 300 and f["share_buys"] == 0.5
     assert f["C"][1] == pytest.approx(0.8, abs=0.02) and f["C"][10] < -0.9
+
+
+def test_mm_markouts_split_spread_earned_and_adverse_move(tmp_path):
+    from smart.mm_study import Markouts
+    lines = [book(T0, A, 0.50, 0.52), book(T0 + 1, B, 0.48, 0.50)]
+    for i in range(60):                        # buys of YES at the ask; the mid then rises one cent
+        t = T0 + 1000 + i * 400000
+        lines += [book(t - 10, A, 0.50, 0.52), trade(t, A, 0.52, 10, "BUY"), book(t + 30000, A, 0.51, 0.53)]
+    write_day(tmp_path / "data", lines)
+    mk = Markouts(tmp_path / "data")
+    for ev in replay(tmp_path / "data" / "book", [DAY]):
+        mk.on_event(ev)
+    row = mk.rows()[0]
+    assert row["half_spread_earned_c"] == pytest.approx(1.0) and row["edge_10s_c"] == pytest.approx(1.0)
+    assert row["edge_60s_c"] == pytest.approx(0.0, abs=1e-6)       # the cent earned is lost to the move
+    assert row["share_buys"] == 1.0 and row["trades_per_day"] == 60
+
+
+def test_mm_markouts_mirror_trades_of_the_other_token(tmp_path):
+    from smart.mm_study import Markouts
+    lines = [book(T0, A, 0.50, 0.52), book(T0 + 1, B, 0.48, 0.50)]
+    lines += [trade(T0 + 1000 + i * 1000, B, 0.50, 10, "BUY") for i in range(50)]      # = sells of YES at 0.50
+    lines.append(book(T0 + 3600000, A, 0.50, 0.52))
+    write_day(tmp_path / "data", lines)
+    mk = Markouts(tmp_path / "data")
+    for ev in replay(tmp_path / "data" / "book", [DAY]):
+        mk.on_event(ev)
+    row = mk.rows()[0]
+    assert row["token"] == A and row["share_buys"] == 0.0 and row["half_spread_earned_c"] == pytest.approx(1.0)
+
+
+def test_sig_cycle_replay_uses_past_hours_only_and_marks_open_cycles():
+    from smart.mm_study import scan_token
+    prints = [(h * 3600.0, 0.20, 100.0) for h in range(100)]       # anchor 0.20 once 72 hours exist
+    prints += [(100 * 3600.0, 0.11, 50.0),                         # through the 0.12 bid (x0.60): filled
+               (101 * 3600.0, 0.19, 50.0),                         # through the 0.18 target (x1.50): won
+               (102 * 3600.0, 0.10, 50.0),                         # filled again
+               (103 * 3600.0, 0.06, 50.0)]                         # never comes back: marked at 0.06
+    r = scan_token(prints)["x0.60_x1.50"]
+    assert r["cycles"] == 2 and r["wins"] == 1 and r["open"] == 1
+    assert r["ret"][0] == pytest.approx(0.5) and r["open_mark_ret"][0] == pytest.approx(-0.5)
+    assert scan_token(prints[:60])["x0.60_x1.50"]["cycles"] == 0   # not enough history: no bid

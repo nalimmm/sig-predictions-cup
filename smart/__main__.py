@@ -4,6 +4,7 @@
               is ever sent: this package has no live mode.
   backtest    run the same engine over recorded days, into a separate journal
   study       measure what happens after sweeps on recorded days (no strategy, no money)
+  mm-study    which markets are worth making: maker edge after each trade, and the SIG cycle replayed
   report      summarise a journal directory
   clear-halt  restart a pod halted by a circuit breaker (the user's decision, never automatic)
 """
@@ -52,6 +53,10 @@ def main(argv=None):
     st.add_argument("--days", required=True)
     st.add_argument("--out", required=True, help="summary.json and sweeps.jsonl go here")
     st.add_argument("--config")
+    mm = sub.add_parser("mm-study")
+    mm.add_argument("--data", default="/var/lib/book-recorder")
+    mm.add_argument("--days", required=True)
+    mm.add_argument("--out", required=True, help="mm_summary.json, markouts.csv, cycles_per_token.json")
     r = sub.add_parser("report")
     r.add_argument("journal")
     r.add_argument("--json", action="store_true")
@@ -72,6 +77,14 @@ def main(argv=None):
         s = study_run(a.data, _days(a.days), a.out, _config(a.config),
                       progress=lambda x: log.info("%d events, %d sweeps, %s", x.n_events, len(x.events),
                                                   x.now and utc_day(x.now)))
+        log.info("done in %.0f s", time.time() - t0)
+        print(json.dumps(s, indent=1))
+        return
+
+    if a.cmd == "mm-study":
+        from .mm_study import run as mm_run
+        t0 = time.time()
+        s = mm_run(a.data, _days(a.days), a.out, progress=lambda n, x: log.info("%d events, %d markets", n, len(x.acc)))
         log.info("done in %.0f s", time.time() - t0)
         print(json.dumps(s, indent=1))
         return
