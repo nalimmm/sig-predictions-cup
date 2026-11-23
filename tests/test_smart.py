@@ -414,11 +414,24 @@ def test_dashboard_snapshot_is_sealed_with_the_password_and_never_uploaded_in_cl
     d = _json.loads((tmp_path / "dash" / "data.json").read_text())
     assert d["mode"] == "paper" and d["markets"][0]["fills"] == 1 and d["markets"][0]["fl"][0][1] == 1
     assert len(sent) == 1 and sent[0]["Key"].endswith("data.enc") and b"slug" not in sent[0]["Body"]
+    m = d["markets"][0]                                             # what was paid for the position is what can be lost
+    assert abs(m["risk"] - m["inv"] * m["fl"][0][2]) < 0.01 and abs(d["invested"] - m["risk"]) < 1e-6
+    assert d["capital"] == 100.0 and d["live_from"] == 1000000 and d["missing"] == []
+    assert d["exposure"] == {m["under"]: m["risk"]} and d["hourly"]["n"] < 2 and d["hourly"]["sharpe"] is None
     assert _json.loads(decrypt(sent[0]["Body"], pw)) == d
     with pytest.raises(Exception):
         decrypt(sent[0]["Body"], "mauvais mot de passe !")
     with pytest.raises(ValueError):
         encrypt(b"x", "court")
+
+
+def test_dashboard_hourly_statistics_and_underlyings():
+    from smart.dash import hourly, underlying
+    h = hourly([[0, 0.0], [3600, 1.0], [7200, 3.0], [10800, 2.0]], 0)      # hourly changes +1, +2, -1
+    assert h["n"] == 3 and abs(h["mean"] - 2 / 3) < 1e-3 and abs(h["var"] - 7 / 3) < 1e-3
+    assert abs(h["sharpe"] - (2 / 3) / (7 / 3) ** 0.5) < 1e-3
+    assert underlying("will-bitcoin-dip-to-50k-in-november-2026") == underlying("btc-above-90k") == "Bitcoin"
+    assert underlying("some-election") == "some-election"
 
 
 def test_scan_keeps_steady_edges_one_per_event_and_says_why_it_rejects():
