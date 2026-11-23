@@ -1,0 +1,27 @@
+[Unit]
+Description=Smart pod: paper market making on the live books, feeding the private dashboard (no order is ever sent)
+After=network-online.target book-recorder.service
+Wants=network-online.target
+
+[Service]
+User=bot
+WorkingDirectory=/opt/smart-mm
+# Object storage credentials (the recorder's file) and the dashboard password, which only the owner writes:
+#   sudo install -m 600 -o root -g root /dev/null /etc/smart-dash.env
+#   sudo nano /etc/smart-dash.env      ->  SMART_DASH_PASSWORD=<a phrase of 16 characters or more>
+#                                          SMART_MM_SLUGS=<comma separated slugs, from mm-scan>
+EnvironmentFile=/etc/book-recorder.env
+EnvironmentFile=/etc/smart-dash.env
+ExecStart=/opt/sig-predictions-cup/.venv/bin/python -m smart mm-live --data /var/lib/book-recorder --out /var/lib/smart-mm --slugs ${SMART_MM_SLUGS} --upload
+Nice=10
+MemoryMax=600M
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/smart-mm
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
