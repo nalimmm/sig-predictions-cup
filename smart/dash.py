@@ -89,9 +89,17 @@ class Publisher:
             (self.out / "data.enc").write_bytes(blob)
             if self.client is not None:
                 try:
-                    self.client.put_object(Bucket=self.bucket, Key=self.key, Body=blob,
+                    # readable by link: the content is sealed, and the page fetches it without credentials
+                    self.client.put_object(Bucket=self.bucket, Key=self.key, Body=blob, ACL="public-read",
                                            ContentType="application/octet-stream", CacheControl="no-store")
                     self.uploads += 1
                 except Exception:               # the simulator must not stop because storage is down
                     self.errors += 1
         return True
+
+
+def upload_page(client, bucket: str, page_path, key: str = "smart-dashboard/index.html") -> str:
+    """Put the static page next to data.enc, readable by link. It holds no data and no secret."""
+    client.put_object(Bucket=bucket, Key=key, Body=Path(page_path).read_bytes(), ACL="public-read",
+                      ContentType="text/html; charset=utf-8", CacheControl="no-cache")
+    return key

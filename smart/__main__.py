@@ -78,6 +78,8 @@ def main(argv=None):
     sc.add_argument("--days", required=True)
     sc.add_argument("--out", required=True, help="scan.csv and scan.json go here")
     sc.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="override a scan threshold")
+    dp = sub.add_parser("dash-page", help="upload the dashboard page to object storage (BOOK_S3_* variables)")
+    dp.add_argument("--page", default="deploy/smart-dashboard/index.html")
     r = sub.add_parser("report")
     r.add_argument("journal")
     r.add_argument("--json", action="store_true")
@@ -178,6 +180,14 @@ def main(argv=None):
                                                    "selected": keep, "slugs": ",".join(r["slug"] for r in keep),
                                                    "rejections": reasons, "near_misses_one_reason": near}, indent=1))
         print(json.dumps({"markets_measured": len(rows), "selected": keep}, indent=1))
+        return
+
+    if a.cmd == "dash-page":
+        from book_recorder.offload import client_from_env
+        from .dash import upload_page
+        client, bucket, _ = client_from_env()
+        key = upload_page(client, bucket, a.page)
+        print(f"uploaded {key}")          # the bucket name and endpoint stay out of the logs
         return
 
     if a.cmd == "clear-halt":
