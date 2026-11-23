@@ -165,8 +165,18 @@ def main(argv=None):
                 w.writeheader()
                 w.writerows(rows)
         keep = [r for r in rows if r.get("rank")]
+        cols = ("slug", "event", "end_date", "mid", "tick", "trades_per_day", "usdc_per_day", "spread_ticks", "depth_best_usdc",
+                "half_spread_earned_c", "edge_300s_c", "edge_1800s_c", "edge_300s_t", "adverse_selection_c", "score",
+                "days_left", "rejected")
+        near = [{k: r.get(k) for k in cols} for r in rows
+                if not r.get("rank") and r["score"] > 0 and r["rejected"].count(";") == 0][:15]
+        reasons = {}
+        for r in rows:
+            for w in filter(None, (x.strip() for x in r["rejected"].split(";"))):
+                reasons[w] = reasons.get(w, 0) + 1
         (out / "scan.json").write_text(json.dumps({"days": days, "events_read": n, "markets_measured": len(rows),
-                                                   "selected": keep, "slugs": ",".join(r["slug"] for r in keep)}, indent=1))
+                                                   "selected": keep, "slugs": ",".join(r["slug"] for r in keep),
+                                                   "rejections": reasons, "near_misses_one_reason": near}, indent=1))
         print(json.dumps({"markets_measured": len(rows), "selected": keep}, indent=1))
         return
 

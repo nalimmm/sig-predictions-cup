@@ -45,7 +45,7 @@ HORIZONS_S = (10, 60, 300, 1800)
 
 # ============================================================ A. markouts on the books
 class Acc:
-    __slots__ = ("n", "shares", "usdc", "buys", "s", "e", "e_n", "e300", "e300_sq", "spread", "depth", "samples",
+    __slots__ = ("n", "shares", "usdc", "buys", "s", "e", "e_n", "e300", "e300_sq", "w2", "w2e", "w2e2", "spread", "depth", "samples",
                  "mid", "first", "last")
 
     def __init__(self):
@@ -53,7 +53,8 @@ class Acc:
         self.s = 0.0                                    # share-weighted half spread earned
         self.e = {h: 0.0 for h in HORIZONS_S}           # share-weighted maker edge
         self.e_n = {h: 0.0 for h in HORIZONS_S}         # shares with a mid at that horizon
-        self.e300, self.e300_sq = [0.0, 0], 0.0         # unweighted, for a t statistic
+        self.e300, self.e300_sq = [0.0, 0], 0.0         # unweighted (kept for reference)
+        self.w2, self.w2e, self.w2e2 = 0.0, 0.0, 0.0    # sums of w^2, w^2 e, w^2 e^2 at 300 s, w = shares
         self.spread, self.depth, self.samples, self.mid = 0.0, 0.0, 0, 0.0
         self.first = self.last = None
 
@@ -104,6 +105,9 @@ class Markouts:
                 a.e300[0] += edge
                 a.e300[1] += 1
                 a.e300_sq += edge * edge
+                a.w2 += shares * shares
+                a.w2e += shares * shares * edge
+                a.w2e2 += shares * shares * edge * edge
         trade = self.books.apply(ev)
         kind = ev.get("event_type")
         if trade is not None:
@@ -167,8 +171,12 @@ class Markouts:
             }
             for h in HORIZONS_S:
                 row[f"edge_{h}s_c"] = round(100 * a.e[h] / a.e_n[h], 3) if a.e_n[h] else None
-            row["edge_300s_t"] = round(mu / (var / n300) ** 0.5, 1) if var and var > 0 else None
             e300 = a.e[300] / a.e_n[300] if a.e_n[300] else 0.0
+            # t of the share-weighted edge itself: the mean above weights each fill by its shares, so its
+            # standard error must too (an unweighted t can even carry the opposite sign)
+            se2 = (a.w2e2 - 2 * e300 * a.w2e + e300 * e300 * a.w2) / a.e_n[300] ** 2 if a.e_n[300] and n300 > 1 else 0.0
+            row["edge_300s_t"] = round(e300 / se2 ** 0.5, 1) if se2 > 1e-18 else None
+            row["fills_300s"] = n300
             row["maker_pie_usdc_per_day"] = round(e300 * a.shares / days, 1)
             out.append(row)
         out.sort(key=lambda r: r["maker_pie_usdc_per_day"], reverse=True)
