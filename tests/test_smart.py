@@ -416,7 +416,7 @@ def test_dashboard_snapshot_is_sealed_with_the_password_and_never_uploaded_in_cl
     assert len(sent) == 1 and sent[0]["Key"].endswith("data.enc") and b"slug" not in sent[0]["Body"]
     m = d["markets"][0]                                             # what was paid for the position is what can be lost
     assert abs(m["risk"] - m["inv"] * m["fl"][0][2]) < 0.01 and abs(d["invested"] - m["risk"]) < 1e-6
-    assert d["capital"] == 100.0 and d["live_from"] == 1000000 and d["missing"] == []
+    assert d["greeks"] is None and d["capital"] == 100.0 and d["live_from"] == 1000000 and d["missing"] == []
     assert d["exposure"] == {m["under"]: m["risk"]} and d["hourly"]["n"] < 2 and d["hourly"]["sharpe"] is None
     assert _json.loads(decrypt(sent[0]["Body"], pw)) == d
     with pytest.raises(Exception):
@@ -432,6 +432,23 @@ def test_dashboard_hourly_statistics_and_underlyings():
     assert abs(h["sharpe"] - (2 / 3) / (7 / 3) ** 0.5) < 1e-3
     assert underlying("will-bitcoin-dip-to-50k-in-november-2026") == underlying("btc-above-90k") == "Bitcoin"
     assert underlying("some-election") == "some-election"
+
+
+def test_greeks_of_a_bitcoin_barrier_market():
+    from smart.greeks import barrier, greeks, implied_vol, portfolio, touch
+    assert barrier("will-bitcoin-dip-to-52pt5k-in-november-2026") == (52500.0, -1)
+    assert barrier("will-bitcoin-dip-to-40000-by-december-31-2026-593-522") == (40000.0, -1)
+    assert barrier("will-bitcoin-reach-150k-in-2026") == (150000.0, 1) and barrier("some-election") is None
+    p = touch(80000, 60000, -1, 0.5, 0.25)
+    assert 0 < p < 1 and abs(implied_vol(p, 80000, 60000, -1, 0.25) - 0.5) < 1e-9          # round trip
+    assert touch(59000, 60000, -1, 0.5, 0.25) == 1.0 and implied_vol(0.995, 80000, 60000, -1, 0.25) is None
+    g = greeks(p, 80000, 60000, -1, 0.25)
+    assert g["delta"] < 0 < g["vega"] and g["theta"] < 0            # a dip is likelier when BTC falls, vol rises, time remains
+    now = 1_700_000_000_000
+    end = now + int(0.25 * 365 * 86400 * 1000)
+    pf = portfolio([("will-bitcoin-dip-to-60k-x", -10.0, p, end), ("some-election", 5.0, 0.5, end)], 80000.0, now)
+    assert pf["priced"] == 1 and abs(pf["delta"] + 10 * g["delta"]) < 1e-3 and pf["delta"] > 0     # short YES is long BTC
+    assert portfolio([], None, now) is None
 
 
 def test_scan_keeps_steady_edges_one_per_event_and_says_why_it_rejects():

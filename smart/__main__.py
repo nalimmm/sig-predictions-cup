@@ -73,6 +73,7 @@ def main(argv=None):
     ml.add_argument("--config")
     ml.add_argument("--every", type=float, default=60.0, help="seconds between snapshots")
     ml.add_argument("--upload", action="store_true", help="send data.enc to object storage (BOOK_S3_* variables)")
+    ml.add_argument("--no-greeks", action="store_true", help="do not read the BTC price from Binance (no Greeks)")
     sc = sub.add_parser("mm-scan", help="rank the recorded markets for market making")
     sc.add_argument("--data", default="/var/lib/book-recorder")
     sc.add_argument("--days", required=True)
@@ -133,7 +134,10 @@ def main(argv=None):
             from book_recorder.offload import client_from_env
             client, bucket, _ = client_from_env()
         sim = MMSim(a.data, [x.strip() for x in a.slugs.split(",") if x.strip()], mcfg)
-        pub = Publisher(a.out, password, client, bucket, every_s=a.every)
+        spot = None
+        if not a.no_greeks:
+            from .greeks import binance_spot as spot
+        pub = Publisher(a.out, password, client, bucket, every_s=a.every, spot=spot)
         stopping = []
         for sg in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sg, lambda *_: stopping.append(1))

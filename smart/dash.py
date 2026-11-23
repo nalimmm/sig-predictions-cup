@@ -51,7 +51,8 @@ def hourly(total, t0: int) -> dict:
     return {"n": n, "mean": round(mean, 4), "var": round(var, 4), "sharpe": round(mean / var ** 0.5, 3) if var > 0 else None}
 
 
-def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_from: Optional[int] = None) -> dict:
+def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_from: Optional[int] = None,
+             spot: Optional[float] = None) -> dict:
     """What the page draws. Times are seconds after t0 to keep the file small."""
     qs = list(sim.q.values())
     starts = [q.nav_path[0][0] for q in qs if q.nav_path]
@@ -75,6 +76,12 @@ def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_fro
         last.update(grid[g])
         total.append([sec(g * 300000), round(sum(last.values()), 4)])
     markets.sort(key=lambda m: -m["pnl"])
+    from .greeks import portfolio
+    g = portfolio([(q.slug, q.inv, q.last_mid, q.end_ms) for q in qs], spot, now_ms or sim.now)
+    for m in markets:
+        m.update((g or {}).get("markets", {}).get(m["slug"], {}))
+    if g:
+        del g["markets"]
     peak, dd, expo = -1e18, 0.0, {}
     for _, v in total:
         peak = max(peak, v)
@@ -82,7 +89,7 @@ def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_fro
     for m in markets:
         expo[m["under"]] = round(expo.get(m["under"], 0.0) + m["risk"], 4)
     return {"t0": t0, "updated": now_ms or sim.now, "mode": "paper", "capital": capital,
-            "live_from": live_from, "missing": sorted(sim.missing),
+            "live_from": live_from, "missing": sorted(sim.missing), "greeks": g,
             "invested": round(sum(m["risk"] for m in markets), 4), "exposure": expo, "dd": round(dd, 4),
             "spread": round(sum(m["spread"] for m in markets), 4), "hourly": hourly(total, t0),
             "total_liq": round(sum(m["pnl"] for m in markets), 4), "total_mid": round(sum(m["pnl_mid"] for m in markets), 4),
@@ -115,19 +122,21 @@ class Publisher:
 
     def __init__(self, out_dir, password: Optional[str] = None, client=None, bucket: Optional[str] = None,
                  key: str = "smart-dashboard/data.enc", every_s: float = 60.0, clock=time.time,
-                 capital: float = 100.0):
+                 capital: float = 100.0, spot=None):
         self.out = Path(out_dir)
         self.out.mkdir(parents=True, exist_ok=True)
         self.password, self.client, self.bucket, self.key = password, client, bucket, key
         self.every_s, self.clock, self.next = every_s, clock, 0.0
         self.uploads = self.errors = 0
+        self.spot = spot                    # callable giving the BTC price, or None: no Greeks
         self.capital, self.live_from = capital, int(clock() * 1000)     # earlier events are today's catch-up
 
     def maybe(self, sim) -> bool:
         if self.clock() < self.next:
             return False
         self.next = self.clock() + self.every_s
-        raw = json.dumps(snapshot(sim, int(self.clock() * 1000), self.capital, self.live_from), separators=(",", ":")).encode("utf-8")
+        raw = json.dumps(snapshot(sim, int(self.clock() * 1000), self.capital, self.live_from,
+                                  self.spot() if self.spot else None), separators=(",", ":")).encode("utf-8")
         tmp = self.out / "data.json.tmp"
         tmp.write_bytes(raw)
         tmp.replace(self.out / "data.json")
