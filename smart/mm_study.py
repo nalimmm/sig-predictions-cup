@@ -175,6 +175,74 @@ class Markouts:
         return out
 
 
+# ============================================================ A2. Market scan
+SCAN = {"min_trades_per_day": 30, "min_usdc_per_day": 500, "min_mid": 0.10, "max_mid": 0.90, "min_spread_ticks": 2.0,
+        "min_days_left": 3, "min_edge_300s_c": 0.0, "min_edge_1800s_c": 0.0, "min_t": 2.0, "per_event": 1, "top": 8}
+
+
+def scan(rows: List[dict], today: str, **over) -> List[dict]:
+    """Rank the markets of `rows` (Markouts.rows) for market making and say why each one is in or out.
+
+    liquidity          trades and dollars per day, dollars resting at the best price
+    room               the spread in ticks: with one tick there is nothing to earn inside
+    adverse selection  what the price takes back after a fill: half spread earned minus the edge
+                       left 5 minutes later (in cents per share). The edge must stay positive at 30 min.
+    confidence         the t statistic of the 5 minute edge; the score is the edge minus one
+                       standard error, so a noisy market ranks below a steady one
+    event risk         days to the end date, mid away from 0 and 1, and one market per event
+                       (markets of one event move together: the replay lost 16 $ that way)
+    Measured on recorded days only: a few days give a noisy ranking, to be re-run as data grows."""
+    c = {**SCAN, **over}
+    unknown = set(over) - set(SCAN)
+    if unknown:
+        raise ValueError(f"unknown scan parameters: {sorted(unknown)}")
+    from datetime import date
+    out = []
+    for r in rows:
+        e300, e1800, t, tick = r.get("edge_300s_c"), r.get("edge_1800s_c"), r.get("edge_300s_t"), r.get("tick")
+        left = None
+        try:
+            left = (date.fromisoformat(r["end_date"]) - date.fromisoformat(today)).days if r.get("end_date") else None
+        except ValueError:
+            pass
+        ticks = (r["spread_c"] / 100 / tick) if r.get("spread_c") is not None and tick else None
+        why = []
+        if r["trades_per_day"] < c["min_trades_per_day"] or r["usdc_per_day"] < c["min_usdc_per_day"]:
+            why.append("too little flow")
+        if r.get("mid") is None or not c["min_mid"] <= r["mid"] <= c["max_mid"]:
+            why.append("price too close to 0 or 1")
+        if ticks is None or ticks < c["min_spread_ticks"]:
+            why.append("spread too tight")
+        if left is not None and left < c["min_days_left"]:
+            why.append("ends too soon")
+        if e300 is None or e300 <= c["min_edge_300s_c"]:
+            why.append("no edge after 5 min")
+        if e1800 is None or e1800 <= c["min_edge_1800s_c"]:
+            why.append("edge gone after 30 min")
+        if t is None or t < c["min_t"]:
+            why.append("edge not significant")
+        score = round(e300 * (1 - 1 / t), 3) if e300 and t and t > 1 else 0.0
+        out.append({**r, "spread_ticks": round(ticks, 1) if ticks is not None else None, "days_left": left,
+                    "adverse_selection_c": round(r["half_spread_earned_c"] - e300, 3) if e300 is not None else None,
+                    "score": score, "rejected": "; ".join(why)})
+    out.sort(key=lambda r: (bool(r["rejected"]), -r["score"]))
+    seen, rank = {}, 0
+    for r in out:
+        if r["rejected"]:
+            continue
+        ev = r.get("event") or r["slug"]
+        seen[ev] = seen.get(ev, 0) + 1
+        if seen[ev] > c["per_event"]:
+            r["rejected"] = "another market of the same event ranks higher"
+        elif rank >= c["top"]:
+            r["rejected"] = "below the top %d" % c["top"]
+        else:
+            rank += 1
+            r["rank"] = rank
+    out.sort(key=lambda r: (r.get("rank") is None, r.get("rank") or 0, -r["score"]))
+    return out
+
+
 # ============================================================ B. SIG cycles on the trade history
 SPECS = (("x0.60_x1.50", "mult", 0.60, 1.50), ("x0.75_x1.50", "mult", 0.75, 1.50),
          ("x0.90_x1.15", "mult", 0.90, 1.15), ("-3c_+3c", "add", 0.03, 0.03), ("-5c_+5c", "add", 0.05, 0.05))

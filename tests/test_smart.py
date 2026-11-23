@@ -419,3 +419,20 @@ def test_dashboard_snapshot_is_sealed_with_the_password_and_never_uploaded_in_cl
         decrypt(sent[0]["Body"], "mauvais mot de passe !")
     with pytest.raises(ValueError):
         encrypt(b"x", "court")
+
+
+def test_scan_keeps_steady_edges_one_per_event_and_says_why_it_rejects():
+    from smart.mm_study import scan
+    base = {"event": "e", "end_date": "2026-12-31", "tick": 0.01, "mid": 0.5, "trades_per_day": 100, "usdc_per_day": 5000,
+            "spread_c": 3.0, "depth_best_usdc": 200, "half_spread_earned_c": 1.2, "edge_300s_c": 0.6, "edge_1800s_c": 0.4,
+            "edge_300s_t": 4.0}
+    rows = [{**base, "slug": "steady"}, {**base, "slug": "sibling", "edge_300s_c": 0.5},
+            {**base, "slug": "noisy", "event": "n", "edge_300s_c": 0.9, "edge_300s_t": 1.2},
+            {**base, "slug": "tight", "event": "t", "spread_c": 1.0},
+            {**base, "slug": "toxic", "event": "x", "edge_300s_c": -0.3},
+            {**base, "slug": "other", "event": "o", "edge_300s_c": 0.4, "edge_300s_t": 3.0}]
+    r = {x["slug"]: x for x in scan(rows, "2026-11-21")}
+    assert r["steady"]["rank"] == 1 and r["other"]["rank"] == 2
+    assert r["steady"]["adverse_selection_c"] == 0.6 and r["steady"]["score"] == 0.45
+    assert "same event" in r["sibling"]["rejected"] and "significant" in r["noisy"]["rejected"]
+    assert "tight" in r["tight"]["rejected"] and "no edge" in r["toxic"]["rejected"]

@@ -5,6 +5,7 @@
   backtest    run the same engine over recorded days, into a separate journal
   study       measure what happens after sweeps on recorded days (no strategy, no money)
   mm-study    which markets are worth making: maker edge after each trade, and the SIG cycle replayed
+  mm-scan     rank the recorded markets for market making (flow, spread, adverse selection, event risk)
   mm-sim      paper market making on chosen markets, replayed on recorded days
   mm-live     the same simulator on the recorder's live file, feeding the private dashboard
   report      summarise a journal directory
@@ -72,6 +73,11 @@ def main(argv=None):
     ml.add_argument("--config")
     ml.add_argument("--every", type=float, default=60.0, help="seconds between snapshots")
     ml.add_argument("--upload", action="store_true", help="send data.enc to object storage (BOOK_S3_* variables)")
+    sc = sub.add_parser("mm-scan", help="rank the recorded markets for market making")
+    sc.add_argument("--data", default="/var/lib/book-recorder")
+    sc.add_argument("--days", required=True)
+    sc.add_argument("--out", required=True, help="scan.csv and scan.json go here")
+    sc.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="override a scan threshold")
     r = sub.add_parser("report")
     r.add_argument("journal")
     r.add_argument("--json", action="store_true")
@@ -136,6 +142,32 @@ def main(argv=None):
                 log.warning("%d failed uploads so far", pub.errors)
         pub.next = 0
         pub.maybe(sim)
+        return
+
+    if a.cmd == "mm-scan":
+        import csv
+        from .mm_study import Markouts, scan
+        days = _days(a.days)
+        mk, n = Markouts(a.data), 0
+        for ev in replay(Path(a.data) / "book", days):
+            mk.on_event(ev)
+            n += 1
+            if n % 2_000_000 == 0:
+                log.info("%d events, %d markets", n, len(mk.acc))
+        over = {k: float(v) for k, v in (x.split("=", 1) for x in a.set)}
+        rows = scan(mk.rows(), date.fromisoformat(days[-1]).isoformat(), **over)
+        out = Path(a.out)
+        out.mkdir(parents=True, exist_ok=True)
+        if rows:
+            names = list(dict.fromkeys(k for r in rows for k in r))
+            with open(out / "scan.csv", "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=names)
+                w.writeheader()
+                w.writerows(rows)
+        keep = [r for r in rows if r.get("rank")]
+        (out / "scan.json").write_text(json.dumps({"days": days, "events_read": n, "markets_measured": len(rows),
+                                                   "selected": keep, "slugs": ",".join(r["slug"] for r in keep)}, indent=1))
+        print(json.dumps({"markets_measured": len(rows), "selected": keep}, indent=1))
         return
 
     if a.cmd == "clear-halt":
