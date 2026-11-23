@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Smart, simulation</title>
+<!-- No third-party script, font or request: the page only fetches data.enc next to it and
+     decrypts it in the browser (PBKDF2-SHA256 600000 rounds, AES-256-GCM). See smart/dash.py. -->
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--fg:#17202b;--muted:#5d6876;--line:#dde2e8;--accent:#2b59c3;--buy:#14895b;--sell:#c8402f;--mid:#9aa5b3;
+ --sans:system-ui,-apple-system,"Segoe UI",sans-serif;--mono:ui-monospace,"Cascadia Mono",Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1318;--panel:#171c23;--fg:#e4e8ee;--muted:#93a0af;--line:#2a313b;--accent:#7ea2ff;--buy:#3fcf8e;--sell:#ff7a66;--mid:#5d6876}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 16px 48px;display:flex;flex-direction:column;gap:20px}
+h1{font-size:1.5rem;font-weight:600;margin:0}
+.sub{color:var(--muted);margin:2px 0 0}
+.stats{display:flex;flex-wrap:wrap;gap:28px}
+.stat .k{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.stat .v{font-family:var(--mono);font-size:1.35rem}
+.pos{color:var(--buy)}.neg{color:var(--sell)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;min-width:0}
+.panel h2{font-size:.95rem;font-weight:600;margin:0;word-break:break-word}
+.head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 16px;align-items:baseline;margin-bottom:6px}
+.meta{font-family:var(--mono);font-size:.78rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 14px}
+.chip{font-size:.7rem;padding:1px 7px;border-radius:999px;border:1px solid var(--sell);color:var(--sell)}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:.8rem;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:14px;height:2px;background:var(--accent);display:inline-block}.sw.mid{background:var(--mid)}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;opacity:.7}.dot.buy{background:var(--buy)}.dot.sell{background:var(--sell)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr));gap:16px}
+svg{display:block;width:100%;height:auto}
+svg text{font:10px var(--mono);fill:var(--muted)}
+.note,.empty{color:var(--muted);font-size:.8rem}
+#gate{max-width:380px;margin:18vh auto 0;padding:0 16px;display:flex;flex-direction:column;gap:12px}
+#gate input,#gate button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--fg)}
+#gate button{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;cursor:pointer}
+#err{color:var(--sell);min-height:1.5em;font-size:.85rem}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<form id="gate" autocomplete="off">
+  <h1>Smart, simulation</h1>
+  <p class="sub">Accès privé. Les données sont déchiffrées dans ce navigateur.</p>
+  <input id="pw" type="password" placeholder="Mot de passe" aria-label="Mot de passe" autofocus>
+  <button type="submit">Ouvrir</button>
+  <div id="err" role="alert"></div>
+</form>
+<div class="wrap" id="app" hidden>
+  <header>
+    <h1>P&amp;L du market making simulé</h1>
+    <p class="sub" id="sub"></p>
+  </header>
+  <div class="stats" id="stats"></div>
+  <section class="panel"><div class="head"><h2>P&amp;L total, tous les marchés (USDC, au prix milieu)</h2></div><div id="total"></div></section>
+  <div class="legend">
+    <span><i class="sw"></i>P&amp;L au prix milieu (axe gauche, USDC)</span>
+    <span><i class="sw mid"></i>Prix milieu (axe droit)</span>
+    <span><i class="dot buy"></i>Achat</span><span><i class="dot sell"></i>Vente</span>
+    <span>Une bulle par exécution, surface proportionnelle au montant en dollars. Survole-la pour le détail.</span>
+  </div>
+  <div class="grid" id="grid"></div>
+  <p class="note">Simulation sur les carnets Polymarket : aucun ordre réel, capital fictif. « Liquidé » paie l'écart pour solder le stock. « Arrêté » : la règle de perte par marché s'est déclenchée.</p>
+</div>
+<script>
+"use strict";
+const $=id=>document.getElementById(id), enc=new TextEncoder(), dec=new TextDecoder();
+const fmt=(v,d=2)=>(v>0?"+":"")+v.toFixed(d), cls=v=>v>0?"pos":v<0?"neg":"";
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let key=null, salt=null, timer=null;
+
+async function load(password){
+  const r=await fetch("data.enc?"+Date.now(),{cache:"no-store"});
+  if(!r.ok) throw new Error("données introuvables ("+r.status+")");
+  const b=new Uint8Array(await r.arrayBuffer());
+  if(dec.decode(b.slice(0,4))!=="BCM1") throw new Error("fichier de données inattendu");
+  const s=b.slice(4,20), same=salt&&s.every((x,i)=>x===salt[i]);
+  if(!key||!same){
+    if(password==null) throw new Error("session expirée, recharge la page");
+    const base=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveKey"]);
+    key=await crypto.subtle.deriveKey({name:"PBKDF2",salt:s,iterations:600000,hash:"SHA-256"},base,{name:"AES-GCM",length:256},false,["decrypt"]);
+    salt=s; pwKeep=password;
+  }
+  const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:b.slice(20,32),additionalData:enc.encode("BCM1")},key,b.slice(32));
+  return JSON.parse(dec.decode(plain));
+}
+let pwKeep=null;   // kept in memory only, to re-derive the key when the server rotates the salt
+
+function chart(W,H,series,opts){
+  // series: [{pts:[[x,y]],axis:0|1,cls}], opts.bubbles:[{x,y,r,side,tip}], opts.t0
+  const m={l:46,r:opts.right?40:10,t:8,b:22}, w=W-m.l-m.r, h=H-m.t-m.b;
+  const xs=series.flatMap(s=>s.pts.map(p=>p[0])); if(!xs.length) return "";
+  const x0=Math.min(...xs), x1=Math.max(...xs,x0+1);
+  const rng=a=>{const ys=series.filter(s=>s.axis===a).flatMap(s=>s.pts.map(p=>p[1]));if(!ys.length)return null;
+    let lo=Math.min(...ys,a?Infinity:0), hi=Math.max(...ys,a?-Infinity:0); if(hi-lo<1e-9){hi+=.5;lo-=.5} const pad=(hi-lo)*.08; return [lo-pad,hi+pad]};
+  const R=[rng(0),rng(1)], X=x=>m.l+(x-x0)/(x1-x0)*w, Y=(y,a)=>m.t+h-(y-R[a][0])/(R[a][1]-R[a][0])*h;
+  let s=`<svg viewBox="0 0 ${W} ${H}" role="img">`;
+  for(let i=0;i<=4;i++){const y=R[0][0]+(R[0][1]-R[0][0])*i/4, py=Y(y,0);
+    s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${py}" y2="${py}" stroke="var(--line)"/><text x="${m.l-6}" y="${py+3}" text-anchor="end">${y.toFixed(1)} $</text>`;
+    if(R[1]){const v=R[1][0]+(R[1][1]-R[1][0])*i/4; s+=`<text x="${W-m.r+5}" y="${py+3}">${v.toFixed(2)}</text>`}}
+  if(R[0][0]<0&&R[0][1]>0) s+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Y(0,0)}" y2="${Y(0,0)}" stroke="var(--muted)" stroke-width=".7"/>`;
+  const nt=W<700?3:5; for(let i=0;i<=nt;i++){const x=x0+(x1-x0)*i/nt, d=new Date(opts.t0+x*1000);
+    s+=`<text x="${X(x)}" y="${H-6}" text-anchor="${i===0?"start":i===nt?"end":"middle"}">${d.toLocaleString("fr-FR",{timeZone:"UTC",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</text>`}
+  for(const q of series){let d="",py=null;
+    for(const [x,y] of q.pts){const px=X(x).toFixed(1), ny=Y(y,q.axis).toFixed(1); d+=py===null?`M${px},${ny}`:`H${px}V${ny}`; py=ny}
+    s+=`<path d="${d}" fill="none" stroke="var(${q.axis?"--mid":"--accent"})" stroke-width="${q.axis?1:1.6}"${q.axis?' stroke-dasharray="3 3"':""}/>`}
+  for(const b of (opts.bubbles||[])){const c=b.side>0?"--buy":"--sell";
+    s+=`<circle cx="${X(b.x).toFixed(1)}" cy="${Y(b.y,0).toFixed(1)}" r="${b.r.toFixed(1)}" fill="var(${c})" fill-opacity=".5" stroke="var(${c})"><title>${esc(b.tip)}</title></circle>`}
+  return s+"</svg>";
+}
+
+function render(D){
+  const when=t=>new Date(t).toLocaleString("fr-FR",{timeZone:"UTC",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})+" UTC";
+  $("sub").textContent=`Simulation sur les carnets Polymarket en direct. Aucun ordre réel. Dernière mise à jour : ${when(D.updated)}.`;
+  const n=D.markets.reduce((a,m)=>a+m.fills,0);
+  $("stats").innerHTML=[["P&L au prix milieu",fmt(D.total_mid)+" $",cls(D.total_mid)],["P&L liquidé",fmt(D.total_liq)+" $",cls(D.total_liq)],["Exécutions",n,""],["Marchés",D.markets.length,""]]
+    .map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+  $("total").innerHTML=chart(1100,300,[{pts:D.total,axis:0}],{t0:D.t0})||'<p class="empty">Pas encore de données.</p>';
+  $("grid").innerHTML=D.markets.map(m=>{
+    const nav=m.nav, at=t=>{let lo=0,hi=nav.length-1,r=0;while(lo<=hi){const k=(lo+hi)>>1;if(nav[k][0]<=t){r=k;lo=k+1}else hi=k-1}return nav.length?nav[r][1]:0};
+    const bub=m.fl.map(f=>({x:f[0],y:at(f[0]),side:f[1],r:Math.max(2.5,Math.min(16,2.4*Math.sqrt(f[2]*f[3]))),
+      tip:`${f[1]>0?"Achat":"Vente"} ${f[3]} parts à ${f[2]} (${(f[2]*f[3]).toFixed(2)} $), stock ${f[4]}`}));
+    const body=nav.length?chart(560,240,[{pts:nav.map(x=>[x[0],x[1]]),axis:0},{pts:nav.map(x=>[x[0],x[2]]),axis:1}],{t0:D.t0,right:true,bubbles:bub}):"";
+    return `<section class="panel"><div class="head"><h2>${esc(m.slug.length>90?m.slug.slice(0,90)+"…":m.slug)}</h2>${m.stopped?'<span class="chip">Arrêté</span>':""}</div>
+      <div class="meta"><span class="${cls(m.pnl_mid)}">milieu ${fmt(m.pnl_mid)} $</span><span>liquidé ${fmt(m.pnl)} $</span><span>${m.buys} achats · ${m.sells} ventes</span><span>pire creux ${m.dd.toFixed(2)} $</span><span>stock ${m.inv.toFixed(1)} parts</span></div>
+      ${m.fills?"":'<div class="empty">Aucune exécution pour le moment.</div>'}${body}</section>`}).join("");
+}
+
+$("gate").addEventListener("submit",async e=>{
+  e.preventDefault(); $("err").textContent="Déchiffrement…";
+  try{
+    render(await load($("pw").value)); $("pw").value=""; $("gate").hidden=true; $("app").hidden=false;
+    timer=setInterval(async()=>{try{render(await load(pwKeep))}catch(_){/* keep the last picture; the next tick retries */}},60000);
+  }catch(x){ key=null; $("err").textContent=x.name==="OperationError"?"Mot de passe incorrect.":"Erreur : "+x.message }
+});
+</script>
+</body>
+</html>

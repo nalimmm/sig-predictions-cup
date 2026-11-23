@@ -6,6 +6,7 @@
   study       measure what happens after sweeps on recorded days (no strategy, no money)
   mm-study    which markets are worth making: maker edge after each trade, and the SIG cycle replayed
   mm-sim      paper market making on chosen markets, replayed on recorded days
+  mm-live     the same simulator on the recorder's live file, feeding the private dashboard
   report      summarise a journal directory
   clear-halt  restart a pod halted by a circuit breaker (the user's decision, never automatic)
 """
@@ -64,6 +65,13 @@ def main(argv=None):
     ms.add_argument("--slugs", required=True, help="comma separated market slugs")
     ms.add_argument("--out", required=True, help="mm_sim.json and mm_fills.jsonl go here")
     ms.add_argument("--config", help="JSON file overriding MMConfig defaults")
+    ml = sub.add_parser("mm-live", help="paper market making on the recorder's live file, feeding the private dashboard")
+    ml.add_argument("--data", default="/var/lib/book-recorder")
+    ml.add_argument("--slugs", required=True)
+    ml.add_argument("--out", default="/var/lib/smart-mm", help="data.json (clear, local only) and data.enc go here")
+    ml.add_argument("--config")
+    ml.add_argument("--every", type=float, default=60.0, help="seconds between snapshots")
+    ml.add_argument("--upload", action="store_true", help="send data.enc to object storage (BOOK_S3_* variables)")
     r = sub.add_parser("report")
     r.add_argument("journal")
     r.add_argument("--json", action="store_true")
@@ -102,6 +110,32 @@ def main(argv=None):
         s = mm_sim(a.data, _days(a.days), [x.strip() for x in a.slugs.split(",") if x.strip()], a.out, mcfg,
                    progress=lambda n, x: log.info("%d events, %d fills", n, sum(len(q.fills) for q in x.q.values())))
         print(json.dumps(s, indent=1))
+        return
+
+    if a.cmd == "mm-live":
+        import os
+        from .dash import Publisher
+        from .mm import MMConfig, MMSim
+        mcfg = MMConfig.from_dict(json.loads(Path(a.config).read_text())) if a.config else MMConfig()
+        password = os.environ.get("SMART_DASH_PASSWORD") or None        # from an env file, never from the repository
+        client = bucket = None
+        if a.upload:
+            if not password:
+                raise SystemExit("--upload needs SMART_DASH_PASSWORD: the snapshot is never uploaded in clear")
+            from book_recorder.offload import client_from_env
+            client, bucket, _ = client_from_env()
+        sim = MMSim(a.data, [x.strip() for x in a.slugs.split(",") if x.strip()], mcfg)
+        pub = Publisher(a.out, password, client, bucket, every_s=a.every)
+        stopping = []
+        for sg in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sg, lambda *_: stopping.append(1))
+        log.info("paper market making on %s, %d markets asked, upload=%s; no order is ever sent", a.data, len(sim.slugs), a.upload)
+        for ev in follow(Path(a.data) / "book", stop=lambda: bool(stopping)):
+            sim.on_event(ev)
+            if pub.maybe(sim) and pub.errors:
+                log.warning("%d failed uploads so far", pub.errors)
+        pub.next = 0
+        pub.maybe(sim)
         return
 
     if a.cmd == "clear-halt":

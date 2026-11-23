@@ -393,3 +393,29 @@ def test_mm_does_not_add_to_a_short_while_the_price_runs_against_it_then_stops(t
     assert q.inv < 0
     assert -q.inv * (1 - q.avg) <= 10.0 + 1e-6          # the worst case of the short never passes the cap
     assert r["stopped"] and q.cash + q.inv * q.last_mid > -10.0
+
+
+def test_dashboard_snapshot_is_sealed_with_the_password_and_never_uploaded_in_clear(tmp_path):
+    import json as _json
+    import pytest
+    from smart.dash import Publisher, decrypt, encrypt
+    lines = wide(T0, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50) + [trade(T0 + 10000, A, 0.40, 100, "SELL")]
+    lines += wide(T0 + 400000, 0.40, 0.50)
+    sim, q, r = mm_run(tmp_path, lines, sweep_usdc=1e9)
+    sent = []
+
+    class Client:
+        def put_object(self, **kw):
+            sent.append(kw)
+
+    pw = "une phrase assez longue"
+    pub = Publisher(tmp_path / "dash", pw, Client(), "bucket", clock=lambda: 1000.0)
+    assert pub.maybe(sim) and not pub.maybe(sim)                    # once per period
+    d = _json.loads((tmp_path / "dash" / "data.json").read_text())
+    assert d["mode"] == "paper" and d["markets"][0]["fills"] == 1 and d["markets"][0]["fl"][0][1] == 1
+    assert len(sent) == 1 and sent[0]["Key"].endswith("data.enc") and b"slug" not in sent[0]["Body"]
+    assert _json.loads(decrypt(sent[0]["Body"], pw)) == d
+    with pytest.raises(Exception):
+        decrypt(sent[0]["Body"], "mauvais mot de passe !")
+    with pytest.raises(ValueError):
+        encrypt(b"x", "court")
