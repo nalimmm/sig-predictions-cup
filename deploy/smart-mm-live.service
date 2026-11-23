@@ -6,12 +6,15 @@ Wants=network-online.target
 [Service]
 User=bot
 WorkingDirectory=/opt/smart-mm
-# Object storage credentials (the recorder's file) and the dashboard password, which only the owner writes:
-#   sudo install -m 600 -o root -g root /dev/null /etc/smart-dash.env
-#   sudo nano /etc/smart-dash.env      ->  SMART_DASH_PASSWORD=<a phrase of 16 characters or more>
-#                                          SMART_MM_SLUGS=<comma separated slugs, from mm-scan>
+# Three files, none in the repository:
+#   /etc/book-recorder.env  object storage credentials (the recorder's file)
+#   /etc/smart-dash.env     root only, written by the owner alone: SMART_DASH_PASSWORD="a phrase of 16 characters or more"
+#   /etc/smart-mm.env       not secret: SMART_MM_SLUGS=<comma separated slugs chosen from mm-scan>
 EnvironmentFile=/etc/book-recorder.env
 EnvironmentFile=/etc/smart-dash.env
+EnvironmentFile=/etc/smart-mm.env
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=smart-mm
 ExecStart=/opt/sig-predictions-cup/.venv/bin/python -m smart mm-live --data /var/lib/book-recorder --out /var/lib/smart-mm --slugs ${SMART_MM_SLUGS} --upload
 Nice=10
 MemoryMax=600M
