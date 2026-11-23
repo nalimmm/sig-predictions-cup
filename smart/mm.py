@@ -281,7 +281,7 @@ class MMSim:
             q.mids.append((self.now, mid))
         self.protect(q)
         if not q.nav_path or self.now - q.nav_path[-1][0] >= 300000:
-            q.nav_path.append((self.now, round(q.cash + q.inv * mid, 4)))
+            q.nav_path.append((self.now, round(q.cash + q.inv * mid, 4), round(mid, 5), round(q.inv, 2)))
         if self.now < q.next_quote:
             return
         q.next_quote = self.now + int(cfg.requote_s * 1000)
@@ -327,7 +327,7 @@ class MMSim:
         matched = min(q.bought, q.sold)
         avg_buy = q.buy_cost / q.bought if q.bought else None
         avg_sell = q.sell_proceeds / q.sold if q.sold else None
-        navs = [v for _, v in q.nav_path]
+        navs = [x[1] for x in q.nav_path]
         peak, mdd = -1e18, 0.0
         for v in navs:
             peak = max(peak, v)
@@ -377,6 +377,10 @@ def run(data_dir, days: List[str], slugs: List[str], out_dir, cfg: Optional[MMCo
         for q in sim.q.values():
             for x in q.fills:
                 f.write(json.dumps(x, separators=(",", ":")) + "\n")
+    with open(out / "mm_nav.jsonl", "w", encoding="utf-8") as f:     # 5 minute samples: P&L at mid, mid, inventory
+        for q in sim.q.values():
+            for t, nav, mid, inv in q.nav_path:
+                f.write(json.dumps({"t": t, "slug": q.slug, "pnl": nav, "mid": mid, "inv": inv}, separators=(",", ":")) + "\n")
     s = {"days": days, "span_days": round(span, 2), "config": asdict(sim.cfg), "markets_not_found": sorted(sim.missing),
          "total_pnl_if_liquidated_usdc": round(sum(r["pnl_if_liquidated_usdc"] for r in res), 4),
          "total_pnl_at_mid_usdc": round(sum(r["pnl_at_mid_usdc"] for r in res), 4),
