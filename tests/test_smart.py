@@ -422,6 +422,11 @@ def test_mm_state_survives_a_restart_and_nothing_trades_while_down(tmp_path):
         assert list(new.q) == [A] and r.end_ms is not None
         assert [f["side"] for f in r.fills] == ["BUY", "SELL"] and r.fills[1]["t"] == T0 + 910000
         assert abs(r.bought - q.bought) < 1e-9 and r.nav_path[0] == tuple(q.nav_path[0])
+    assert q.quotes[0][1:] == (None, None) and (0.41, 0.49) in [x[1:] for x in q.quotes]    # where the quotes rested
+    assert snapshot(sim)["markets"][0]["qt"][-1][1:] == [q.bid, q.ask] and st["quoters"][0]["quotes"]
+    back = MMSim(tmp_path / "a" / "data", ["m"], MMConfig())
+    back.restore(st, T0)
+    assert list(back.q["saved:m"].quotes) == list(q.quotes)                         # kept across the restart
 
 
 def test_mm_spread_is_measured_against_the_mid_of_each_fill():

@@ -59,6 +59,7 @@ def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_fro
             "risk": round(at_risk(q), 4), "fees": round(q.fees, 4), "spread": r["spread_captured_usdc"], "under": underlying(q.slug),
             "title": next((m.get("question") for m in sim.markets.values() if m.get("slug") == q.slug and m.get("question")), None),
             "nav": [[sec(t), nav, mid, inv] for t, nav, mid, inv in q.nav_path],
+            "qt": [[sec(t), b, a] for t, b, a in getattr(q, "quotes", ())],
             "fl": [[sec(f["t"]), 1 if f["side"] == "BUY" else -1, f["price"], f["shares"], f["inv_after"]] for f in q.fills]})
     last, total = {}, []
     for g in sorted(grid):

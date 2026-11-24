@@ -116,6 +116,7 @@ class Quoter:
     quoted_s: float = 0.0               # seconds with both quotes live
     _last_t: int = 0
     nav_path: List[tuple] = field(default_factory=list)
+    quotes: deque = field(default_factory=lambda: deque(maxlen=2000))     # (t, bid, ask) at each change, the latest only
     under: str = ""                     # what the market depends on: limits are shared inside it
     dps: Optional[float] = None         # delta per YES share, dollars for BTC +1 %
     dps_t: int = -10**12
@@ -171,7 +172,8 @@ class MMSim:
 
     def state(self) -> dict:
         return {"version": 1, "now": self.now, "quoters": [
-            {"slug": q.slug, **{k: getattr(q, k) for k in self.KEEP}, "fills": q.fills, "nav_path": q.nav_path}
+            {"slug": q.slug, **{k: getattr(q, k) for k in self.KEEP}, "fills": q.fills, "nav_path": q.nav_path,
+             "quotes": list(q.quotes)}
             for q in self.q.values()]}
 
     def restore(self, st: dict, resume_ms: int):
@@ -185,6 +187,7 @@ class MMSim:
                 if k in d:
                     setattr(q, k, d[k])
             q.fills, q.nav_path = list(d.get("fills", [])), [tuple(x) for x in d.get("nav_path", [])]
+            q.quotes.extend(tuple(x) for x in d.get("quotes", []))
             self.q[q.token] = q                     # re-keyed by load() when its market shows up
 
     @staticmethod
@@ -235,6 +238,10 @@ class MMSim:
             for t in toks:
                 if t in self.q:
                     self.on_book(self.q[t])
+        for t in toks:                              # where our quotes rested, for the charts
+            q = self.q.get(t) or self.q.get(self.mirror.get(t))
+            if q is not None and (not q.quotes or q.quotes[-1][1:] != (q.bid, q.ask)):
+                q.quotes.append((self.now, q.bid, q.ask))
 
     def run_timers(self):
         while self.timers and self.timers[0][0] <= self.now:
