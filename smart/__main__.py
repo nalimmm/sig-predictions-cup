@@ -73,6 +73,7 @@ def main(argv=None):
     ml.add_argument("--config")
     ml.add_argument("--every", type=float, default=60.0, help="seconds between snapshots")
     ml.add_argument("--upload", action="store_true", help="send data.enc to object storage (BOOK_S3_* variables)")
+    ml.add_argument("--fresh", action="store_true", help="start from an empty book instead of the saved state")
     ml.add_argument("--no-greeks", action="store_true", help="do not read the BTC price from Binance (no Greeks)")
     sc = sub.add_parser("mm-scan", help="rank the recorded markets for market making")
     sc.add_argument("--data", default="/var/lib/book-recorder")
@@ -139,6 +140,13 @@ def main(argv=None):
             from .greeks import binance_spot as spot
         pub = Publisher(a.out, password, client, bucket, every_s=a.every)
         spot_next, spot_at = 0.0, 0.0
+        saved, legacy = Path(a.out) / "state.json", Path(a.out) / "data.json"
+        if not a.fresh and (saved.exists() or legacy.exists()):
+            st = json.loads(saved.read_text()) if saved.exists() else MMSim.state_from_snapshot(json.loads(legacy.read_text()))
+            sim.restore(st, int(time.time() * 1000))
+            pub.live_from = st.get("live_from") or pub.live_from
+            log.info("restored %d markets, %d fills from %s", len(st["quoters"]), sum(len(q["fills"]) for q in st["quoters"]),
+                     saved.name if saved.exists() else legacy.name)
         stopping = []
         for sg in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sg, lambda *_: stopping.append(1))

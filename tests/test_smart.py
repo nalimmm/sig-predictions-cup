@@ -395,6 +395,35 @@ def test_mm_does_not_add_to_a_short_while_the_price_runs_against_it_then_stops(t
     assert r["stopped"] and q.cash + q.inv * q.last_mid > -10.0
 
 
+def test_mm_state_survives_a_restart_and_nothing_trades_while_down(tmp_path):
+    import json as _json
+    from smart.dash import snapshot
+    from smart.mm import MMConfig, MMSim
+    first = wide(T0, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50) + [trade(T0 + 10000, A, 0.40, 100, "SELL")]
+    first += wide(T0 + 400000, 0.40, 0.50)
+    down = [trade(T0 + 500000, A, 0.60, 100, "BUY")]                # while stopped: must not fill our old ask
+    after = wide(T0 + 900000, 0.40, 0.50) + wide(T0 + 905000, 0.40, 0.50) + [trade(T0 + 910000, A, 0.60, 100, "BUY")]
+    sim, q, _ = mm_run(tmp_path / "a", first, sweep_usdc=1e9)
+    assert len(q.fills) == 1 and q.ask is not None
+    st = _json.loads(_json.dumps(sim.state()))
+    legacy = MMSim.state_from_snapshot(_json.loads(_json.dumps(snapshot(sim))))     # what an older version left behind
+    for k in ("inv", "cash", "avg", "bought", "buy_cost"):
+        assert abs(legacy["quoters"][0][k] - st["quoters"][0][k]) < 1e-6
+    assert [list(x) for x in legacy["quoters"][0]["nav_path"]] == [list(x) for x in q.nav_path] and len(legacy["quoters"][0]["fills"]) == 1
+
+    for state in (st, legacy):
+        d = tmp_path / ("b" + str(id(state)))
+        write_day(d, first + down + after)
+        new = MMSim(d, ["m"], MMConfig(sweep_usdc=1e9))
+        new.restore(state, T0 + 800000)
+        for ev in replay(d / "book", [DAY]):
+            new.on_event(ev)
+        r = new.q[A]
+        assert list(new.q) == [A] and r.end_ms is not None
+        assert [f["side"] for f in r.fills] == ["BUY", "SELL"] and r.fills[1]["t"] == T0 + 910000
+        assert abs(r.bought - q.bought) < 1e-9 and r.nav_path[0] == tuple(q.nav_path[0])
+
+
 C, D = "333", "444"
 BTC1, BTC2 = "will-bitcoin-dip-to-60k-in-x", "will-bitcoin-dip-to-55k-in-x"
 

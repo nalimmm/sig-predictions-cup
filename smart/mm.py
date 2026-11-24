@@ -142,6 +142,7 @@ class MMSim:
         self.markouts_s = markouts_s
         self.timers: List[tuple] = []               # (due, fill dict, horizon, token) kept sorted by append order
         self.missing = set(slugs)
+        self.resume_ms = 0
         self.spot: Optional[float] = None           # BTC price, set by the live loop; None: no delta limit
 
     # ------------------------------------------------------------ setup
@@ -157,9 +158,51 @@ class MMSim:
                             end = datetime.fromisoformat(m["end_date"].replace("Z", "+00:00")).timestamp() * 1000
                         except ValueError:
                             pass
-                    self.q[first] = Quoter(token=first, slug=m["slug"], end_ms=end, under=underlying(m["slug"]))
+                    kept = self.q.pop("saved:" + m["slug"], None)       # restored before its market was known
+                    if kept is not None:
+                        kept.token, kept.end_ms = first, end
+                    self.q[first] = kept or Quoter(token=first, slug=m["slug"], end_ms=end, under=underlying(m["slug"]))
                     self.mirror[second] = first
                     self.missing.discard(m["slug"])
+
+    # ------------------------------------------------------------ state kept across restarts
+    KEEP = ("inv", "cash", "avg", "reduce_only", "bought", "sold", "buy_cost", "sell_proceeds", "max_long", "max_short",
+            "pulls", "quote_updates", "quoted_s", "last_mid", "last_bid", "last_ask", "fees", "taken")
+
+    def state(self) -> dict:
+        return {"version": 1, "now": self.now, "quoters": [
+            {"slug": q.slug, **{k: getattr(q, k) for k in self.KEEP}, "fills": q.fills, "nav_path": q.nav_path}
+            for q in self.q.values()]}
+
+    def restore(self, st: dict, resume_ms: int):
+        """Positions, P&L and history as saved. Nothing rests in the book after a restart, and the
+        events older than `resume_ms` only rebuild the books: no quote and no fill is imagined for
+        the time the simulator was down."""
+        self.resume_ms = resume_ms
+        for d in st.get("quoters", []):
+            q = Quoter(token="saved:" + d["slug"], slug=d["slug"], end_ms=None, under=underlying(d["slug"]))
+            for k in self.KEEP:
+                if k in d:
+                    setattr(q, k, d[k])
+            q.fills, q.nav_path = list(d.get("fills", [])), [tuple(x) for x in d.get("nav_path", [])]
+            self.q[q.token] = q                     # re-keyed by load() when its market shows up
+
+    @staticmethod
+    def state_from_snapshot(snap: dict) -> dict:
+        """Rebuild a state from a dashboard snapshot (data.json) written before states were saved:
+        the fills carry everything, the entry price included."""
+        out = []
+        for m in snap.get("markets", []):
+            sim, q = MMSim.__new__(MMSim), Quoter(token="", slug=m["slug"], end_ms=None)
+            sim.cfg, sim.markouts_s, sim.timers, sim.now = MMConfig(), (), [], 0
+            for sec, side, price, shares, _ in m.get("fl", []):
+                sim.now = snap["t0"] + sec * 1000
+                sim.fill(q, "BUY" if side > 0 else "SELL", price, shares, taker=True)
+                q.fills[-1].pop("taker")
+            q.reduce_only, q.last_mid = bool(m.get("stopped")), m.get("mid") or (m["nav"][-1][2] if m.get("nav") else None)
+            q.nav_path = [(snap["t0"] + sec * 1000, nav, mid, inv) for sec, nav, mid, inv in m.get("nav", [])]
+            out.append({"slug": q.slug, **{k: getattr(q, k) for k in MMSim.KEEP}, "fills": q.fills, "nav_path": q.nav_path})
+        return {"version": 1, "now": snap.get("updated", 0), "quoters": out}
 
     # ------------------------------------------------------------ events
     def on_event(self, ev: dict):
@@ -179,6 +222,9 @@ class MMSim:
         else:
             toks = {str(ev.get("asset_id"))}
         if not any(t in self.q or t in self.mirror for t in toks):
+            return
+        if r < self.resume_ms:                      # catching up after a restart: books only
+            self.books.apply(ev)
             return
         self.now = max(self.now, r)
         self.run_timers()

@@ -126,6 +126,9 @@ class Publisher:
         snap = snapshot(sim, int(self.clock() * 1000), self.capital, self.live_from)
         snap["scan"] = self.scan(sim)
         raw = json.dumps(snap, separators=(",", ":")).encode("utf-8")
+        st = self.out / "state.json.tmp"             # positions and history, read back at the next start
+        st.write_text(json.dumps({**sim.state(), "live_from": self.live_from}, separators=(",", ":")))
+        st.replace(self.out / "state.json")
         tmp = self.out / "data.json.tmp"
         tmp.write_bytes(raw)
         tmp.replace(self.out / "data.json")
