@@ -137,12 +137,20 @@ def main(argv=None):
         spot = None
         if not a.no_greeks:
             from .greeks import binance_spot as spot
-        pub = Publisher(a.out, password, client, bucket, every_s=a.every, spot=spot)
+        pub = Publisher(a.out, password, client, bucket, every_s=a.every)
+        spot_next, spot_at = 0.0, 0.0
         stopping = []
         for sg in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sg, lambda *_: stopping.append(1))
         log.info("paper market making on %s, %d markets asked, upload=%s; no order is ever sent", a.data, len(sim.slugs), a.upload)
         for ev in follow(Path(a.data) / "book", stop=lambda: bool(stopping)):
+            if spot and time.time() >= spot_next:       # BTC price once a minute; dropped when 10 minutes stale
+                spot_next = time.time() + 60
+                px = spot()
+                if px:
+                    sim.spot, spot_at = px, time.time()
+                elif time.time() - spot_at > 600:
+                    sim.spot = None
             sim.on_event(ev)
             if pub.maybe(sim) and pub.errors:
                 log.warning("%d failed uploads so far", pub.errors)

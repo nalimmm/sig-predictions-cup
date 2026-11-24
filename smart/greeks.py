@@ -20,6 +20,18 @@ BARRIER = re.compile(r"bitcoin-(dip-to|reach|hit)-(\d+(?:pt\d+)?)(k?)(?:-|$)")
 SPOT_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
 
 
+UNDERLYINGS = (("bitcoin", "Bitcoin"), ("btc", "Bitcoin"), ("ethereum", "Ethereum"), ("solana", "Solana"))
+
+
+def underlying(slug: str) -> str:
+    """What a market depends on, to add up exposure. Crypto strikes share one underlying; any
+    other market stands alone under its own slug."""
+    for key, name in UNDERLYINGS:
+        if key in slug:
+            return name
+    return slug
+
+
 def barrier(slug: str) -> Optional[tuple]:
     """(level in dollars, +1 for a barrier above spot or -1 below), or None when the slug is not a BTC barrier."""
     m = BARRIER.search(slug)

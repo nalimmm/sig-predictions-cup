@@ -395,6 +395,60 @@ def test_mm_does_not_add_to_a_short_while_the_price_runs_against_it_then_stops(t
     assert r["stopped"] and q.cash + q.inv * q.last_mid > -10.0
 
 
+C, D = "333", "444"
+BTC1, BTC2 = "will-bitcoin-dip-to-60k-in-x", "will-bitcoin-dip-to-55k-in-x"
+
+
+def two_btc(tmp_path, lines, spot=None, **cfg):
+    from smart.mm import MMConfig, MMSim
+    write_day(tmp_path / "data", lines, markets=[market(slug=BTC1), market(slug=BTC2, cid="0xn", tokens=(C, D))])
+    sim = MMSim(tmp_path / "data", [BTC1, BTC2], MMConfig(sweep_usdc=1e9, **cfg))
+    sim.spot = spot
+    for ev in replay(tmp_path / "data" / "book", [DAY]):
+        sim.on_event(ev)
+    return sim, sim.q[A], sim.q[C]
+
+
+def wide2(t, bid, ask):
+    return [book(t, C, bid, ask), book(t + 1, D, round(1 - ask, 2), round(1 - bid, 2))]
+
+
+def test_mm_markets_on_one_underlying_share_a_cap(tmp_path):
+    lines = wide(T0, 0.40, 0.50) + wide2(T0 + 10, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50)
+    lines += [trade(T0 + 10000, A, 0.40, 100, "SELL")]              # we buy on the first strike
+    lines += wide2(T0 + 20000, 0.40, 0.50) + wide2(T0 + 25000, 0.40, 0.50)
+    lines += [trade(T0 + 30000, C, 0.40, 100, "SELL")] + wide2(T0 + 40000, 0.40, 0.50)
+    _, q1, q2 = two_btc(tmp_path / "a", lines)
+    assert q1.under == q2.under == "Bitcoin" and len(q1.fills) == 1 and len(q2.fills) == 1
+    _, q1, q2 = two_btc(tmp_path / "b", lines, max_group_usdc=4.0)  # 2.73 at risk on the first: no room for 5 shares more
+    assert len(q1.fills) == 1 and q2.fills == []
+
+
+def test_mm_stops_adding_to_the_net_delta_at_its_limit(tmp_path):
+    lines = wide(T0, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50) + [trade(T0 + 10000, A, 0.40, 100, "SELL")]
+    lines += wide(T0 + 60000, 0.40, 0.50) + wide(T0 + 65000, 0.40, 0.50) + [trade(T0 + 70000, A, 0.38, 100, "SELL")]
+    lines += wide(T0 + 80000, 0.40, 0.50)
+    _, q, _ = two_btc(tmp_path / "a", lines)                                        # no BTC price: no delta limit
+    assert [f["side"] for f in q.fills] == ["BUY", "BUY"]
+    sim, q, _ = two_btc(tmp_path / "b", lines, spot=80000.0, max_net_delta_usdc=0.05)
+    assert q.dps < 0 and q.inv * q.dps < -0.05                                      # long the dip = short BTC, past the limit
+    assert [f["side"] for f in q.fills] == ["BUY"] and q.bid is None and q.ask is not None
+
+
+def test_mm_sells_what_is_left_into_the_book_before_the_end_date(tmp_path):
+    from smart.mm import MMConfig, MMSim
+    lines = wide(T0, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50) + [trade(T0 + 10000, A, 0.40, 100, "SELL")]
+    lines += wide(T0 + 2 * 3600000, 0.40, 0.50) + wide(T0 + 2 * 3600000 + 5000, 0.40, 0.50)     # the old ask is cancelled
+    write_day(tmp_path / "data", lines, markets=[market(end="2026-11-20T10:30:00+00:00")])
+    sim = MMSim(tmp_path / "data", ["m"], MMConfig(sweep_usdc=1e9, exit_hours=10, min_hours_left=9))
+    for ev in replay(tmp_path / "data" / "book", [DAY]):
+        sim.on_event(ev)
+    q = sim.q[A]
+    assert [(f["side"], f["price"], f.get("taker", False)) for f in q.fills] == [("BUY", 0.41, False), ("SELL", 0.40, True)]
+    assert abs(q.inv) < 1e-9 and q.fees > 0 and q.bid is None and q.ask is None
+    assert abs(q.cash - (-q.fills[0]["shares"] * 0.01 - q.fees)) < 1e-6             # lost the tick and the taker fee
+
+
 def test_dashboard_snapshot_is_sealed_with_the_password_and_never_uploaded_in_clear(tmp_path):
     import json as _json
     import pytest

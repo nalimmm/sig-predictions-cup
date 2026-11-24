@@ -13,20 +13,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .greeks import underlying
+
 MAGIC = b"BCM1"
 ITERATIONS = 600_000
-
-
-UNDERLYINGS = (("bitcoin", "Bitcoin"), ("btc", "Bitcoin"), ("ethereum", "Ethereum"), ("solana", "Solana"))
-
-
-def underlying(slug: str) -> str:
-    """What a market depends on, to add up exposure. Crypto strikes share one underlying; any
-    other market stands alone under its own slug."""
-    for key, name in UNDERLYINGS:
-        if key in slug:
-            return name
-    return slug
 
 
 def at_risk(q) -> float:
@@ -51,8 +41,7 @@ def hourly(total, t0: int) -> dict:
     return {"n": n, "mean": round(mean, 4), "var": round(var, 4), "sharpe": round(mean / var ** 0.5, 3) if var > 0 else None}
 
 
-def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_from: Optional[int] = None,
-             spot: Optional[float] = None) -> dict:
+def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_from: Optional[int] = None) -> dict:
     """What the page draws. Times are seconds after t0 to keep the file small."""
     qs = list(sim.q.values())
     starts = [q.nav_path[0][0] for q in qs if q.nav_path]
@@ -67,7 +56,7 @@ def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_fro
             "slug": q.slug, "fills": r["fills"], "buys": r["buys"], "sells": r["sells"],
             "pnl": r["pnl_if_liquidated_usdc"], "pnl_mid": r["pnl_at_mid_usdc"], "dd": r["max_drawdown_usdc"],
             "stopped": r["stopped"], "inv": r["inventory_end_shares"], "mid": r["last_mid"],
-            "risk": round(at_risk(q), 4), "spread": r["spread_captured_usdc"], "under": underlying(q.slug),
+            "risk": round(at_risk(q), 4), "fees": round(q.fees, 4), "spread": r["spread_captured_usdc"], "under": underlying(q.slug),
             "title": next((m.get("question") for m in sim.markets.values() if m.get("slug") == q.slug and m.get("question")), None),
             "nav": [[sec(t), nav, mid, inv] for t, nav, mid, inv in q.nav_path],
             "fl": [[sec(f["t"]), 1 if f["side"] == "BUY" else -1, f["price"], f["shares"], f["inv_after"]] for f in q.fills]})
@@ -77,7 +66,7 @@ def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_fro
         total.append([sec(g * 300000), round(sum(last.values()), 4)])
     markets.sort(key=lambda m: -m["pnl"])
     from .greeks import portfolio
-    g = portfolio([(q.slug, q.inv, q.last_mid, q.end_ms) for q in qs], spot, now_ms or sim.now)
+    g = portfolio([(q.slug, q.inv, q.last_mid, q.end_ms) for q in qs], getattr(sim, "spot", None), now_ms or sim.now)
     for m in markets:
         m.update((g or {}).get("markets", {}).get(m["slug"], {}))
     if g:
@@ -90,7 +79,7 @@ def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_fro
         expo[m["under"]] = round(expo.get(m["under"], 0.0) + m["risk"], 4)
     return {"t0": t0, "updated": now_ms or sim.now, "mode": "paper", "capital": capital,
             "live_from": live_from, "missing": sorted(sim.missing), "greeks": g,
-            "invested": round(sum(m["risk"] for m in markets), 4), "exposure": expo, "dd": round(dd, 4),
+            "invested": round(sum(m["risk"] for m in markets), 4), "exposure": expo, "limits": {"group": sim.cfg.max_group_usdc, "delta": sim.cfg.max_net_delta_usdc}, "dd": round(dd, 4),
             "spread": round(sum(m["spread"] for m in markets), 4), "hourly": hourly(total, t0),
             "total_liq": round(sum(m["pnl"] for m in markets), 4), "total_mid": round(sum(m["pnl_mid"] for m in markets), 4),
             "total": total, "markets": markets}
@@ -122,21 +111,19 @@ class Publisher:
 
     def __init__(self, out_dir, password: Optional[str] = None, client=None, bucket: Optional[str] = None,
                  key: str = "smart-dashboard/data.enc", every_s: float = 60.0, clock=time.time,
-                 capital: float = 100.0, spot=None):
+                 capital: float = 100.0):
         self.out = Path(out_dir)
         self.out.mkdir(parents=True, exist_ok=True)
         self.password, self.client, self.bucket, self.key = password, client, bucket, key
         self.every_s, self.clock, self.next = every_s, clock, 0.0
         self.uploads = self.errors = 0
-        self.spot = spot                    # callable giving the BTC price, or None: no Greeks
         self.capital, self.live_from = capital, int(clock() * 1000)     # earlier events are today's catch-up
 
     def maybe(self, sim) -> bool:
         if self.clock() < self.next:
             return False
         self.next = self.clock() + self.every_s
-        raw = json.dumps(snapshot(sim, int(self.clock() * 1000), self.capital, self.live_from,
-                                  self.spot() if self.spot else None), separators=(",", ":")).encode("utf-8")
+        raw = json.dumps(snapshot(sim, int(self.clock() * 1000), self.capital, self.live_from), separators=(",", ":")).encode("utf-8")
         tmp = self.out / "data.json.tmp"
         tmp.write_bytes(raw)
         tmp.replace(self.out / "data.json")

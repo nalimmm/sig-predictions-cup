@@ -10,8 +10,17 @@ exposed meanwhile, which is how a maker gets picked off):
   fair      mid - skew_ticks * tick * (inventory / max inventory)     lean against the inventory
   bid       the highest tick <= fair - half_spread, and at most one tick inside the best bid
   ask       the lowest tick  >= fair + half_spread, and at most one tick inside the best ask
-  never crossing the book, never outside [min_price, max_price], none within `min_hours_left`
-  of the end date, and no bid (ask) when the inventory is at +max (-max).
+  never crossing the book, never outside [min_price, max_price], and no bid (ask) when the
+  inventory is at +max (-max).
+
+Limits shared by the markets on one underlying (the Bitcoin strikes are one bet):
+  - `max_group_usdc` caps the dollars at risk summed over the group;
+  - when the BTC price is known (`spot`), the group's net delta (dollars for BTC +1 %, one-touch
+    model of smart/greeks.py) shifts every fair by up to `delta_skew_ticks` to bring it back to
+    zero, and at `max_net_delta_usdc` the side that would add to it is not quoted at all.
+
+Before the end date: within `exit_hours` nothing new is opened, the quotes only reduce; within
+`min_hours_left` what is left is sold into the book as a taker, paying the spread and the fee.
 
 Protection against informed flow (the S1 study: a resting bid filled during a sweep lost 1.8
 cents a share): when aggressive selling in the last `sweep_window_s` exceeds `sweep_usdc`, or the
@@ -36,6 +45,7 @@ from typing import Dict, List, Optional
 from book_recorder.replay import Books
 
 from .feed import load_markets, replay, utc_day
+from .greeks import YEAR_S, barrier, greeks, underlying
 from .s1 import infer_tick
 
 
@@ -51,7 +61,13 @@ class MMConfig:
     latency_s: float = 2.0
     min_price: float = 0.03
     max_price: float = 0.97
-    min_hours_left: float = 24.0
+    max_group_usdc: float = 20.0        # per underlying: dollars at risk summed over its markets (20 % of 100)
+    max_net_delta_usdc: float = 1.0     # per underlying: net P&L for BTC +1 % beyond which one side is not quoted
+    delta_skew_ticks: float = 2.0       # shift of fair at the full net delta
+    exit_hours: float = 72.0            # this close to the end date: reduce only
+    min_hours_left: float = 24.0        # this close: sell what is left into the book
+    taker_fee_rate: float = 0.07        # fee = shares * rate * p * (1 - p), the crypto rate, the highest category
+    take_every_s: float = 60.0
     min_shares: float = 5.0
     sweep_window_s: float = 30.0
     sweep_usdc: float = 200.0
@@ -100,6 +116,17 @@ class Quoter:
     quoted_s: float = 0.0               # seconds with both quotes live
     _last_t: int = 0
     nav_path: List[tuple] = field(default_factory=list)
+    under: str = ""                     # what the market depends on: limits are shared inside it
+    dps: Optional[float] = None         # delta per YES share, dollars for BTC +1 %
+    dps_t: int = -10**12
+    next_take: int = 0
+    fees: float = 0.0
+    taken: float = 0.0                  # shares closed as a taker before the end date
+
+
+def _risk(q: Quoter) -> float:
+    """Dollars the open position can still lose: what was paid for it."""
+    return q.inv * q.avg if q.inv >= 0 else -q.inv * (1 - q.avg)
 
 
 class MMSim:
@@ -115,6 +142,7 @@ class MMSim:
         self.markouts_s = markouts_s
         self.timers: List[tuple] = []               # (due, fill dict, horizon, token) kept sorted by append order
         self.missing = set(slugs)
+        self.spot: Optional[float] = None           # BTC price, set by the live loop; None: no delta limit
 
     # ------------------------------------------------------------ setup
     def load(self, day: str):
@@ -129,7 +157,7 @@ class MMSim:
                             end = datetime.fromisoformat(m["end_date"].replace("Z", "+00:00")).timestamp() * 1000
                         except ValueError:
                             pass
-                    self.q[first] = Quoter(token=first, slug=m["slug"], end_ms=end)
+                    self.q[first] = Quoter(token=first, slug=m["slug"], end_ms=end, under=underlying(m["slug"]))
                     self.mirror[second] = first
                     self.missing.discard(m["slug"])
 
@@ -188,7 +216,33 @@ class MMSim:
             self.fill(q, "SELL", q.ask, min(q.ask_sz, t.size))
         self.protect(q)
 
-    def fill(self, q: Quoter, side: str, price: float, shares: float):
+    def share_delta(self, q: Quoter) -> Optional[float]:
+        if self.spot is None:
+            return None
+        if self.now - q.dps_t >= 30000:
+            q.dps_t, q.dps = self.now, None
+            b = barrier(q.slug)
+            if b and q.end_ms and q.last_mid:
+                g = greeks(q.last_mid, self.spot, b[0], b[1], (q.end_ms - self.now) / 1000 / YEAR_S)
+                q.dps = g["delta"] if g else None
+        return q.dps
+
+    def take_out(self, q: Quoter, b):
+        """Too close to the end date to wait for a maker fill: hit the best price for what it shows."""
+        side = "SELL" if q.inv > 0 else "BUY"
+        px = b.best_bid() if q.inv > 0 else b.best_ask()
+        shown = (b.bids if q.inv > 0 else b.asks).get(px, 0.0) if px is not None else 0.0
+        shares = min(abs(q.inv), shown)
+        if shares <= 0:
+            return
+        q.next_take = self.now + int(self.cfg.take_every_s * 1000)
+        fee = shares * self.cfg.taker_fee_rate * px * (1 - px)
+        q.cash -= fee
+        q.fees += fee
+        q.taken += shares
+        self.fill(q, side, px, shares, taker=True)
+
+    def fill(self, q: Quoter, side: str, price: float, shares: float, taker: bool = False):
         before, signed = q.inv, (shares if side == "BUY" else -shares)
         after = before + signed
         if before * signed >= 0:                    # opening or adding: weighted entry price
@@ -198,22 +252,26 @@ class MMSim:
         if side == "BUY":
             q.inv += shares
             q.cash -= shares * price
-            q.bid_sz -= shares
             q.bought += shares
             q.buy_cost += shares * price
-            if q.bid_sz < self.cfg.min_shares:
+            if not taker:
+                q.bid_sz -= shares
+            if not taker and q.bid_sz < self.cfg.min_shares:
                 q.bid, q.bid_sz = None, 0.0
         else:
             q.inv -= shares
             q.cash += shares * price
-            q.ask_sz -= shares
             q.sold += shares
             q.sell_proceeds += shares * price
-            if q.ask_sz < self.cfg.min_shares:
+            if not taker:
+                q.ask_sz -= shares
+            if not taker and q.ask_sz < self.cfg.min_shares:
                 q.ask, q.ask_sz = None, 0.0
         q.max_long, q.max_short = max(q.max_long, q.inv), min(q.max_short, q.inv)
         f = {"t": self.now, "slug": q.slug, "side": side, "price": price, "shares": round(shares, 4),
              "mid": q.last_mid, "inv_after": round(q.inv, 4)}
+        if taker:
+            f["taker"] = True
         q.fills.append(f)
         for h in self.markouts_s:
             self.timers.append((self.now + h * 1000, f, h, q.token))
@@ -293,7 +351,16 @@ class MMSim:
         frac = (1 if q.inv >= 0 else -1) * min(risk / cfg.max_inventory_usdc, 1.0)
         if not q.reduce_only and q.cash + q.inv * mid <= -cfg.stop_loss_usdc:
             q.reduce_only = True
-        fair = mid - cfg.skew_ticks * tick * frac
+        # limits shared with the other markets on the same underlying
+        grp = [o for o in self.q.values() if o.under == q.under]
+        others = sum(_risk(o) for o in grp if o is not q)
+        room = min(room, max(cfg.max_group_usdc - others - risk, 0.0))
+        flip = min(cfg.max_inventory_usdc, max(cfg.max_group_usdc - others, 0.0))    # room once this position is closed
+        dps, gfrac = self.share_delta(q), 0.0
+        if dps:
+            net = sum(o.inv * o.dps for o in grp if o.dps)
+            gfrac = max(-1.0, min(1.0, net / cfg.max_net_delta_usdc)) * (1 if dps > 0 else -1)     # > 0: buying YES here adds to the net delta
+        fair = mid - cfg.skew_ticks * tick * frac - cfg.delta_skew_ticks * tick * gfrac
         h = cfg.half_spread_ticks * tick
         my_bid = math.floor((fair - h) / tick + 1e-9) * tick
         my_ask = math.ceil((fair + h) / tick - 1e-9) * tick
@@ -301,16 +368,23 @@ class MMSim:
         my_ask = max(my_ask, ask - tick if cfg.improve else ask)
         my_bid, my_ask = min(my_bid, ask - tick), max(my_ask, bid + tick)
         my_bid, my_ask = round(my_bid, 6), round(my_ask, 6)
-        late = q.end_ms is not None and q.end_ms - self.now < cfg.min_hours_left * 3.6e6
+        left_h = (q.end_ms - self.now) / 3.6e6 if q.end_ms is not None else math.inf
+        late = left_h < cfg.exit_hours
+        if left_h < cfg.min_hours_left and abs(q.inv) > 1e-9 and self.now >= q.next_take:
+            self.take_out(q, b)
         qs = cfg.quote_usdc / max(min(mid, 1 - mid), 0.05)      # same share count on both sides
         if q.inv >= 0:                              # a bid adds to a long, an ask reduces it then may open a short
             bsz = min(qs, room / max(my_bid, 0.01))
-            asz = min(qs, q.inv + cfg.max_inventory_usdc / max(1 - my_ask, 0.01))
+            asz = min(qs, q.inv + flip / max(1 - my_ask, 0.01))
         else:
-            bsz = min(qs, -q.inv + cfg.max_inventory_usdc / max(my_bid, 0.01))
+            bsz = min(qs, -q.inv + flip / max(my_bid, 0.01))
             asz = min(qs, room / max(1 - my_ask, 0.01))
         if late or q.reduce_only:                   # never open or flip: at most flatten
             bsz, asz = min(bsz, max(-q.inv, 0.0)), min(asz, max(q.inv, 0.0))
+        if gfrac >= 1.0:                            # net delta at its limit: nothing that adds to it
+            bsz = 0.0
+        elif gfrac <= -1.0:
+            asz = 0.0
         ok_bid = (not late or q.inv < 0) and cfg.min_price <= my_bid <= cfg.max_price and bsz >= cfg.min_shares \
             and self.now >= q.pull_bid_until
         ok_ask = (not late or q.inv > 0) and cfg.min_price <= my_ask <= cfg.max_price and asz >= cfg.min_shares \
@@ -350,7 +424,7 @@ class MMSim:
                 "pnl_per_day_usdc": round((q.cash + q.inv * liq) / days, 4) if days else None,
                 "max_drawdown_usdc": round(mdd, 4),
                 "max_long_shares": round(q.max_long, 1), "max_short_shares": round(q.max_short, 1),
-                "stopped": q.reduce_only, "pulls": q.pulls, "quote_updates": q.quote_updates,
+                "stopped": q.reduce_only, "taker_shares": round(q.taken, 1), "taker_fees_usdc": round(q.fees, 4), "pulls": q.pulls, "quote_updates": q.quote_updates,
                 "hours_two_sided": round(q.quoted_s / 3600, 1),
                 **{f"fill_markout_{h}s_c": mo(h) for h in self.markouts_s},
                 "buy_markout_300s_c": mo(300, "BUY"), "sell_markout_300s_c": mo(300, "SELL")}
