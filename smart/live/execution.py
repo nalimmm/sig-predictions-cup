@@ -111,6 +111,7 @@ class Executor:
         self.stats = Counter()
         self.refused = Counter()
         self.call_ms: List[float] = []
+        self.quote_path: Dict[str, list] = {}       # slug -> [[t ms, bid, bid size, ask, ask size]] of what rests, YES terms
         sim.executor = self
 
     # ------------------------------------------------------------ helpers
@@ -245,6 +246,7 @@ class Executor:
             self.stats["errors"] += 1
             self.journal.write("error", why=e)
         self.refresh_quotes()
+        self.track()
 
     def refresh_quotes(self):
         """In live mode the simulator's quotes are what rests: YES-equivalent best of each side."""
@@ -255,6 +257,20 @@ class Executor:
             asks = [(yes_side(o)[1], o.left) for o in self.orders.values() if not o.taker and o.slug == q.slug and yes_side(o)[0] == "SELL"]
             q.bid, q.bid_sz = (bids[0] if bids else (None, 0.0))
             q.ask, q.ask_sz = (asks[0] if asks else (None, 0.0))
+
+    def track(self, cap: int = 4000):
+        """Record each change of the resting quotes (YES terms, best of each side) for the price charts."""
+        t = int(self.clock() * 1000)
+        for q in self.sim.q.values():
+            bids = [(yes_side(o)[1], o.left) for o in self.orders.values() if not o.taker and o.slug == q.slug and yes_side(o)[0] == "BUY"]
+            asks = [(yes_side(o)[1], o.left) for o in self.orders.values() if not o.taker and o.slug == q.slug and yes_side(o)[0] == "SELL"]
+            b = max(bids) if bids else (None, 0.0)
+            a = min(asks) if asks else (None, 0.0)
+            cur = [b[0], round(b[1], 2), a[0], round(a[1], 2)]
+            path = self.quote_path.setdefault(q.slug, [])
+            if not path or path[-1][1:] != cur:
+                path.append([t] + cur)
+                del path[:-cap]
 
     def step(self):
         """decide, execute and commit in one go (shadow mode: the dry venue does not block)."""
@@ -274,6 +290,7 @@ class Executor:
                 self.journal.write("fill", id=o.id, slug=q.slug, side=side, price=price, shares=round(got, 4), sim=True)
                 if o.left < 1e-6:
                     self.orders.pop(o.id, None)
+                    self.track()
                 return got
         self.stats["unbacked"] += 1
         return 0.0
@@ -309,6 +326,7 @@ class Executor:
             if oid not in open_:
                 self.orders.pop(oid, None)
         self.refresh_quotes()
+        self.track()
 
     # ------------------------------------------------------------ dashboard
     def summary(self) -> dict:

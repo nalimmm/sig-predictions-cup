@@ -42,6 +42,9 @@ class Publish:
         snap = snapshot(sim, int(time.time() * 1000), self.capital, self.live_from)
         snap["mode"] = sim.mode
         snap["execution"] = ex.summary()
+        t0 = snap["t0"]
+        for m in snap["markets"]:      # resting quotes over time, YES terms: [s after t0, bid, bid size, ask, ask size]
+            m["ord"] = [[round((x[0] - t0) / 1000)] + x[1:] for x in ex.quote_path.get(m["slug"], []) if x[0] >= t0]
         state = {**sim.state(), "live_from": self.live_from,
                  "orders": [o.__dict__ for o in ex.orders.values()] if sim.mode == "live" else []}
         return json.dumps(snap, separators=(",", ":")).encode(), json.dumps(state, separators=(",", ":"))

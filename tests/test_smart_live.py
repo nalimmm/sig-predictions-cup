@@ -191,6 +191,8 @@ def test_shadow_mirrors_quotes_into_dry_orders_and_fills_them(tmp_path):
     assert q.inv > 0 and any(l["k"] == "fill" for l in lines)
     snap = json.loads((tmp_path / "data.json").read_text())
     assert snap["mode"] == "shadow" and snap["execution"]["placed"] >= 2
+    path = snap["markets"][0]["ord"]
+    assert path and any(row[1] == 0.41 and row[3] == 0.45 for row in path)
     assert json.loads(ws.sent[0]) == {"assets_ids": [Y, N], "type": "market"}
 
 
