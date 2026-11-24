@@ -1,0 +1,30 @@
+[Unit]
+Description=Smart pod: shadow market making on Polymarket's live books (real order layer, dry venue: nothing is signed or sent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bot
+WorkingDirectory=/opt/smart-mm
+# No wallet key is readable by this service. Three files, none in the repository:
+#   /etc/book-recorder.env  object storage credentials (to upload the sealed dashboard snapshot)
+#   /etc/smart-dash.env     SMART_DASH_PASSWORD, written by the owner
+#   /etc/smart-mm.env       SMART_MM_SLUGS, the markets the owner validated
+EnvironmentFile=/etc/book-recorder.env
+EnvironmentFile=/etc/smart-dash.env
+EnvironmentFile=/etc/smart-mm.env
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=smart-shadow
+ExecStart=/opt/sig-predictions-cup/.venv/bin/python -m smart.live shadow --out /var/lib/smart-shadow --upload
+Nice=5
+MemoryMax=500M
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/smart-shadow
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

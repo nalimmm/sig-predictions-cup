@@ -1,0 +1,37 @@
+[Unit]
+Description=Smart pod: REAL market making on Polymarket (orders signed with the wallet key, real money)
+After=network-online.target
+Wants=network-online.target
+# Never starts unless the owner armed it, wrote the key, and no STOP file is present.
+ConditionPathExists=/etc/smart-live/ARMED
+ConditionPathExists=/etc/smart-live/key
+ConditionPathExists=!/etc/smart-live/STOP
+
+[Service]
+# A throwaway system user: it reads the key only through the credential below, never from /etc.
+DynamicUser=yes
+WorkingDirectory=/opt/smart-mm
+EnvironmentFile=/etc/book-recorder.env
+EnvironmentFile=/etc/smart-dash.env
+EnvironmentFile=/etc/smart-mm.env
+EnvironmentFile=/etc/smart-live/wallet.env
+LoadCredential=polymarket-key:/etc/smart-live/key
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=smart-live
+ExecStart=/opt/sig-predictions-cup/.venv/bin/python -m smart.live live --out /var/lib/smart-live --upload
+# No automatic restart: after a crash or a circuit breaker, the owner looks before trading again.
+Restart=no
+TimeoutStopSec=20
+MemoryMax=500M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
