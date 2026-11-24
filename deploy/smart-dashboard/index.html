@@ -15,7 +15,7 @@
 html,body{background:var(--bg);color:var(--ink);font:13px/1.35 "Segoe UI",-apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif;font-variant-numeric:tabular-nums}
 #app{max-width:1440px;margin:0 auto;padding:20px 40px 40px}
 .top{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap;padding-bottom:10px;border-bottom:2px solid var(--ink)}
-.top b{font-size:15px;font-weight:600}.top span{color:var(--t2);font-size:12px}.off{color:var(--neg)}
+.top b{font-size:15px;font-weight:600}.top span{color:var(--t2);font-size:12px}.top a{color:inherit}.off{color:var(--neg)}
 .stats{display:grid;grid-template-columns:1.25fr repeat(5,1fr);border-bottom:1px solid var(--hair)}
 .st{padding:14px 18px 14px 0;min-width:0}.st+.st{padding-left:18px;border-left:1px solid var(--hair)}
 .l,h3,th{font-size:11px;font-weight:500;color:var(--t2);letter-spacing:.04em;text-transform:uppercase}
@@ -67,10 +67,12 @@ const num=(v,d=2)=>Math.abs(v).toLocaleString("fr-FR",{minimumFractionDigits:d,m
 const sg=(v,d=2)=>v==null?"…":(v>0?"+":v<0?"−":"")+num(v,d), pl=(v,d=2)=>v==null?"…":(v<0?"−":"")+num(v,d), ng=v=>v<0?"neg":"";
 const when=(t,o)=>new Date(t).toLocaleString("fr-FR",o||{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",second:"2-digit"});
 const hm=t=>when(t,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+const SHADOW=new URLSearchParams(location.search).get("src")==="shadow", SRC=SHADOW?"data-shadow.enc":"data.enc";   // ?src=shadow: the shadow run of the live executor
+const XL={resting:"Ordres au carnet",placed:"Posés",cancelled:"Annulés",fills:"Exécutions",refused:"Refusés",committed:"Engagé",budget:"Budget",halt:"Arrêt"};
 let key=null, salt=null, pwKeep=null, D=null, sel=null;   // the password stays in memory only, to follow a new salt
 
 async function load(password){
-  const r=await fetch("data.enc?"+Date.now(),{cache:"no-store"});
+  const r=await fetch(SRC+"?"+Date.now(),{cache:"no-store"});
   if(!r.ok) throw new Error("Données introuvables ("+r.status+")");
   const b=new Uint8Array(await r.arrayBuffer());
   if(dec.decode(b.slice(0,4))!=="BCM1") throw new Error("Fichier inattendu");
@@ -132,7 +134,7 @@ function priceChart(m,W,H,full){
 
 function draw(){
   const age=Math.round((Date.now()-D.updated)/1000), stale=age>240, cap=D.capital??100, G=D.greeks;
-  $("status").innerHTML=`Simulation papier &nbsp;·&nbsp; capital ${num(cap,0)} $ &nbsp;·&nbsp; ${when(D.updated)} &nbsp;·&nbsp; <span class="${stale?"off":""}">${stale?"hors ligne depuis "+Math.round(age/60)+" min":"à jour"}</span>`;
+  $("status").innerHTML=`${D.mode==="shadow"?"Mode ombre":"Simulation papier"} &nbsp;·&nbsp; <a href="${SHADOW?"?":"?src=shadow"}">${SHADOW?"voir le papier":"voir l'ombre"}</a> &nbsp;·&nbsp; capital ${num(cap,0)} $ &nbsp;·&nbsp; ${when(D.updated)} &nbsp;·&nbsp; <span class="${stale?"off":""}">${stale?"hors ligne depuis "+Math.round(age/60)+" min":"à jour"}</span>`;
   const n=D.markets.reduce((a,m)=>a+m.fills,0), vol=D.markets.reduce((a,m)=>a+m.fl.reduce((x,f)=>x+f[2]*f[3],0),0), h=D.hourly||{n:0};
   const st=(l,v,nn,c)=>`<div class="st"><div class="l">${l}</div><div class="v ${c||""}">${v}</div><div class="n">${nn}</div></div>`;
   $("stats").innerHTML=st("P&L",sg(D.total_mid)+" $","si liquidé "+sg(D.total_liq)+" $",ng(D.total_mid))+
@@ -148,6 +150,7 @@ function draw(){
   side+=`<h3 class="s">Exposition</h3>`+ex.map(([u,v])=>{const c=cnt(u), one=D.markets.find(m=>m.under===u); return kv(c>1||!one||one.slug!==u?`${u} · ${c} marché${c>1?"s":""}`:name(one),num(v)+" $")}).join("");
   const S=D.scan, stop=D.markets.filter(m=>m.stopped).length, gone=D.missing||[], miss=gone.filter(x=>!D.markets.some(m=>m.slug===x));
   side+=`<h3 class="s">État</h3>`+kv("Marchés cotés",(D.markets.length-stop-(gone.length-miss.length))+" / "+(D.markets.length+miss.length))+(stop?kv("À l'arrêt après perte",stop,"neg"):"")+(gone.length?kv("Absents de l'enregistreur",gone.length,"neg"):"");
+  if(D.execution) side+=`<h3 class="s">Exécution</h3>`+Object.entries(D.execution).filter(([,v])=>v!==null&&typeof v!=="object").map(([k,v])=>kv(XL[k]||k,typeof v==="number"?(Number.isInteger(v)?v:num(v)):v===true?"oui":v===false?"non":esc(v),k==="halt"&&v?"neg":"")).join("");
   if(S) side+=`<h3 class="s">Scan du ${when(S.generated,{day:"numeric",month:"short"})} · ${S.measured} marchés</h3>`+kv("Retenus",S.selected.length)+kv("Retenus non cotés",S.new.length,S.new.length?"neg":"")+kv("Cotés non retenus",S.dropped.length,S.dropped.length?"neg":"");
   $("side").innerHTML=side;
   $("gh1").hidden=$("gh2").hidden=!G;
