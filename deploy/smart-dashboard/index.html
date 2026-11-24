@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -49,37 +49,37 @@ svg{display:block}svg text{font-size:11px;fill:var(--t3)}
 <body>
 <form id="gate" autocomplete="off">
   <b>Smart · market making</b>
-  <input id="pw" type="password" placeholder="Mot de passe" aria-label="Mot de passe" autofocus>
-  <button type="submit">Entrer</button>
+  <input id="pw" type="password" placeholder="Password" aria-label="Password" autofocus>
+  <button type="submit">Enter</button>
   <div id="err" role="alert"></div>
 </form>
 <div id="app" hidden>
   <div class="top"><b>Smart · market making</b><span id="status"></span></div>
   <div class="stats" id="stats"></div>
-  <div class="mid"><div><h3>P&amp;L du portefeuille, $</h3><div id="c1"></div></div><div id="side"></div></div>
-  <div class="wrap"><table><thead><tr><th>Marché</th><th class="c">Prix et exécutions<span class="key"><i style="background:var(--buy)"></i>achat<i style="background:var(--sell)"></i>vente<span style="margin-left:12px">surface = montant</span></span></th>
-    <th>P&amp;L</th><th>Investi</th><th>% du pf</th><th>Stock</th><th id="gh1" hidden>Delta</th><th id="gh2" hidden>Vol. impl.</th><th>Exéc.</th><th>État</th></tr></thead><tbody id="mk"></tbody></table></div>
+  <div class="mid"><div><h3>Portfolio P&amp;L, $</h3><div id="c1"></div></div><div id="side"></div></div>
+  <div class="wrap"><table><thead><tr><th>Market</th><th class="c">Price and fills<span class="key"><i style="background:var(--buy)"></i>buy<i style="background:var(--sell)"></i>sell<span style="margin-left:12px">area = notional</span></span></th>
+    <th>P&amp;L</th><th>At risk</th><th>% of capital</th><th>Inventory</th><th id="gh1" hidden>Delta</th><th id="gh2" hidden>Impl. vol</th><th>Fills</th><th>Status</th></tr></thead><tbody id="mk"></tbody></table></div>
 </div>
 <script>
 "use strict";
 const $=id=>document.getElementById(id), enc=new TextEncoder(), dec=new TextDecoder();
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const num=(v,d=2)=>Math.abs(v).toLocaleString("fr-FR",{minimumFractionDigits:d,maximumFractionDigits:d});
-const sg=(v,d=2)=>v==null?"…":(v>0?"+":v<0?"−":"")+num(v,d), pl=(v,d=2)=>v==null?"…":(v<0?"−":"")+num(v,d), ng=v=>v<0?"neg":"";
-const when=(t,o)=>new Date(t).toLocaleString("fr-FR",o||{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",second:"2-digit"});
-const hm=t=>when(t,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+const num=(v,d=2)=>Math.abs(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const sg=(v,d=2)=>v==null?"…":(v>0?"+":v<0?"−":"")+num(v,d), su=(v,d=2)=>v==null?"…":(v>0?"+":v<0?"−":"")+"$"+num(v,d), us=(v,d=2)=>v==null?"…":(v<0?"−":"")+"$"+num(v,d), pl=(v,d=2)=>v==null?"…":(v<0?"−":"")+num(v,d), ng=v=>v<0?"neg":"";
+const when=(t,o)=>new Date(t).toLocaleString("en-US",o||{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
+const hm=t=>when(t,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",hour12:false});
 const SHADOW=new URLSearchParams(location.search).get("src")==="shadow", SRC=SHADOW?"data-shadow.enc":"data.enc";   // ?src=shadow: the shadow run of the live executor
-const XL={resting:"Ordres au carnet",placed:"Posés",cancelled:"Annulés",fills:"Exécutions",refused:"Refusés",committed:"Engagé",budget:"Budget",halt:"Arrêt"};
+const XL={resting:"Resting orders",placed:"Placed",cancelled:"Cancelled",fills:"Fills",refused:"Rejected",committed:"Committed",budget:"Budget",halt:"Halted"};
 let key=null, salt=null, pwKeep=null, D=null, sel=null, rng=24;   // the password stays in memory only, to follow a new salt
 
 async function load(password){
   const r=await fetch(SRC+"?"+Date.now(),{cache:"no-store"});
-  if(!r.ok) throw new Error("Données introuvables ("+r.status+")");
+  if(!r.ok) throw new Error("Data not found ("+r.status+")");
   const b=new Uint8Array(await r.arrayBuffer());
-  if(dec.decode(b.slice(0,4))!=="BCM1") throw new Error("Fichier inattendu");
+  if(dec.decode(b.slice(0,4))!=="BCM1") throw new Error("Unexpected file");
   const s=b.slice(4,20), same=salt&&s.every((x,i)=>x===salt[i]);
   if(!key||!same){
-    if(password==null) throw new Error("Session expirée");
+    if(password==null) throw new Error("Session expired");
     const base=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveKey"]);
     key=await crypto.subtle.deriveKey({name:"PBKDF2",salt:s,iterations:600000,hash:"SHA-256"},base,{name:"AES-GCM",length:256},false,["decrypt"]);
     salt=s; pwKeep=password;
@@ -97,14 +97,14 @@ function xticks(x0,x1,X,H,pb){let s=""; const n=X(x1)-X(x0)<600?1:3; for(let i=0
 
 function pnlChart(el){
   const W=Math.max(300,el.clientWidth), H=270, pr=44, pt=12, pb=22, pts=D.total;
-  if(pts.length<2){el.innerHTML=`<svg width="${W}" height="${H}"><text x="0" y="${H/2}">En attente de données</text></svg>`;return}
+  if(pts.length<2){el.innerHTML=`<svg width="${W}" height="${H}"><text x="0" y="${H/2}">Waiting for data</text></svg>`;return}
   const ys=pts.map(p=>p[1]); let lo=Math.min(0,...ys), hi=Math.max(0,...ys); if(hi-lo<.2){hi+=.1;lo-=.1} const pad=(hi-lo)*.08; lo-=pad; hi+=pad;
   const x0=pts[0][0], x1=pts[pts.length-1][0], X=v=>(v-x0)/((x1-x0)||1)*(W-pr), Y=v=>H-pb-(v-lo)/(hi-lo)*(H-pb-pt);
-  let s=`<svg width="${W}" height="${H}" role="img" aria-label="P&L du portefeuille">`;
+  let s=`<svg width="${W}" height="${H}" role="img" aria-label="Portfolio P&L">`;
   for(const v of nice(lo,hi,4)) s+=`<line x1="0" x2="${W-pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(${v===0?"--t3":"--hair"})"/><text x="${W-pr+8}" y="${Y(v)+4}">${sg(v,Math.abs(hi-lo)<4?1:0)}</text>`;
   s+=xticks(x0,x1,X,H,pb);
   const lf=D.live_from?(D.live_from-D.t0)/1000:null;
-  if(lf!=null&&lf>x0&&lf<x1){const px=X(lf), right=px<160; s+=`<line x1="${px}" x2="${px}" y1="${pt}" y2="${H-pb}" stroke="var(--t3)" stroke-dasharray="2 3"/><text x="${px+(right?6:-6)}" y="${pt+10}" text-anchor="${right?"start":"end"}">démarrage du direct</text>`}
+  if(lf!=null&&lf>x0&&lf<x1){const px=X(lf), right=px<160; s+=`<line x1="${px}" x2="${px}" y1="${pt}" y2="${H-pb}" stroke="var(--t3)" stroke-dasharray="2 3"/><text x="${px+(right?6:-6)}" y="${pt+10}" text-anchor="${right?"start":"end"}">live since</text>`}
   const L=pts[pts.length-1];
   s+=`<path d="${line(pts,X,Y)}" fill="none" stroke="var(--ink)" stroke-width="1.5" stroke-linejoin="round"/><circle cx="${X(L[0])}" cy="${Y(L[1])}" r="3" fill="var(--ink)"/>`;
   s+=`<line id="xh" y1="${pt}" y2="${H-pb}" stroke="var(--t2)" hidden/><circle id="xd" r="3" fill="var(--bg)" stroke="var(--ink)" stroke-width="1.5" hidden/></svg><div id="tip" hidden></div>`;
@@ -113,14 +113,14 @@ function pnlChart(el){
   svg.onmousemove=e=>{const px=e.clientX-svg.getBoundingClientRect().left, t=x0+px/(W-pr)*(x1-x0); if(px<0||px>W-pr) return;
     let a=0,b=pts.length-1; while(a<b){const k=(a+b+1)>>1; if(pts[k][0]<=t) a=k; else b=k-1}
     const p=pts[a], cx=X(p[0]); xh.setAttribute("x1",cx); xh.setAttribute("x2",cx); xd.setAttribute("cx",cx); xd.setAttribute("cy",Y(p[1]));
-    xh.removeAttribute("hidden"); xd.removeAttribute("hidden"); tip.hidden=false; tip.textContent=hm(D.t0+p[0]*1000)+"  "+sg(p[1])+" $";
+    xh.removeAttribute("hidden"); xd.removeAttribute("hidden"); tip.hidden=false; tip.textContent=hm(D.t0+p[0]*1000)+"  "+su(p[1]);
     tip.style.left=Math.min(Math.max(0,cx-60),W-pr-150)+"px"};
   svg.onmouseleave=()=>{xh.setAttribute("hidden","");xd.setAttribute("hidden","");tip.hidden=true};
 }
 
 const quotes=m=>m.ord?m.ord.map(o=>[o[0],o[1],o[3]]):(m.qt||[]);     // shadow: [s, bid, size, ask, size]; paper: [s, bid, ask]
 function priceChart(m,W,H,full){
-  if(!m.nav.length) return `<svg width="${W}" height="${H}"><text x="0" y="${H/2+4}">pas encore de carnet</text></svg>`;
+  if(!m.nav.length) return `<svg width="${W}" height="${H}"><text x="0" y="${H/2+4}">no book yet</text></svg>`;
   const pr=full?52:44, pt=full?12:5, pb=full?22:5, end=m.nav[m.nav.length-1][0], from=full&&rng?end-rng*3600:-Infinity;
   let i0=0; while(i0<m.nav.length-1&&m.nav[i0+1][0]<=from) i0++;          // one point before the window, so the line starts at its edge
   const nav=m.nav.slice(i0), fl=m.fl.filter(f=>f[0]>=from), qt=full?quotes(m):[], xs=nav.map(p=>p[0]);
@@ -128,7 +128,7 @@ function priceChart(m,W,H,full){
   const ys=nav.map(p=>p[2]).concat(fl.map(f=>f[2]), qt.filter((q,i)=>(qt[i+1]?.[0]??x1)>=x0).flatMap(q=>[q[1],q[2]]).filter(v=>v!=null));
   let lo=Math.min(...ys), hi=Math.max(...ys); const pad=(hi-lo)*.15||.01; lo-=pad; hi+=pad;
   const X=v=>2+(Math.max(v,x0)-x0)/(x1-x0)*(W-pr-2), Y=v=>H-pb-(v-lo)/(hi-lo)*(H-pb-pt);
-  let s=`<svg width="${W}" height="${H}" role="img" aria-label="Prix et exécutions">`;
+  let s=`<svg width="${W}" height="${H}" role="img" aria-label="Price and fills">`;
   if(full){for(const v of nice(lo,hi,5)) s+=`<line x1="0" x2="${W-pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--hair)"/><text x="${W-pr+8}" y="${Y(v)+4}">${num(v,3)}</text>`; s+=xticks(x0,x1,X,H,pb)}
   for(const [col,c] of [[1,"--buy"],[2,"--sell"]]){let d="", on=false;      // our resting quotes, as steps; a gap when nothing rested
     qt.forEach((q,i)=>{const t1=qt[i+1]?.[0]??x1, v=q[col]; if(t1<x0||v==null){on=false;return}
@@ -137,41 +137,41 @@ function priceChart(m,W,H,full){
   s+=`<path d="${line(nav.map(p=>[p[0],p[2]]),X,Y)}" fill="none" stroke="var(--ink)" stroke-width="${full?1.25:1}" stroke-linejoin="round"/>`;
   const k=full?2:.9, cap=full?16:9;
   for(const f of fl){const usd=f[2]*f[3]; s+=`<circle cx="${X(f[0]).toFixed(1)}" cy="${Y(f[2]).toFixed(1)}" r="${Math.min(cap,Math.max(1.6,Math.sqrt(usd)*k)).toFixed(1)}" fill="var(${f[1]>0?"--buy":"--sell"})" fill-opacity=".75" stroke="var(--bg)" stroke-width="${full?1:0}">`+
-    (full?`<title>${hm(D.t0+f[0]*1000)} · ${f[1]>0?"achat":"vente"} ${num(f[3],1)} parts à ${num(f[2],3)} · ${num(usd)} $ · stock ${num(f[4],1)}</title>`:"")+`</circle>`}
+    (full?`<title>${hm(D.t0+f[0]*1000)} · ${f[1]>0?"buy":"sell"} ${num(f[3],1)} shares at ${num(f[2],3)} · ${us(usd)} · inventory ${pl(f[4],1)}</title>`:"")+`</circle>`}
   if(!full){const l=m.nav[m.nav.length-1][2]; s+=`<text x="${W-pr+6}" y="${Y(l)+4}" style="fill:var(--t2)">${num(l,3)}</text>`}
   return s+"</svg>";
 }
-const detail=(m,W)=>`<div class="rg">${[[6,"6 h"],[24,"24 h"],[0,"tout"]].map(([h,l])=>`<a data-h="${h}" class="${rng===h?"on":""}">${l}</a>`).join("")}`+
-  (quotes(m).length?`<span><i style="background:var(--buy)"></i>notre achat posé<i style="background:var(--sell)"></i>notre vente posée</span>`:"")+`</div>`+priceChart(m,W,260,true);
+const detail=(m,W)=>`<div class="rg">${[[6,"6h"],[24,"24h"],[0,"all"]].map(([h,l])=>`<a data-h="${h}" class="${rng===h?"on":""}">${l}</a>`).join("")}`+
+  (quotes(m).length?`<span><i style="background:var(--buy)"></i>our bid<i style="background:var(--sell)"></i>our ask</span>`:"")+`</div>`+priceChart(m,W,260,true);
 
 function draw(){
   const age=Math.round((Date.now()-D.updated)/1000), stale=age>240, cap=D.capital??100, G=D.greeks;
-  $("status").innerHTML=`${D.mode==="shadow"?"Mode ombre":"Simulation papier"} &nbsp;·&nbsp; <a href="${SHADOW?"?":"?src=shadow"}">${SHADOW?"voir le papier":"voir l'ombre"}</a> &nbsp;·&nbsp; capital ${num(cap,0)} $ &nbsp;·&nbsp; ${when(D.updated)} &nbsp;·&nbsp; <span class="${stale?"off":""}">${stale?"hors ligne depuis "+Math.round(age/60)+" min":"à jour"}</span>`;
+  $("status").innerHTML=`${D.mode==="shadow"?"Shadow mode":"Paper simulation"} &nbsp;·&nbsp; <a href="${SHADOW?"?":"?src=shadow"}">${SHADOW?"view paper":"view shadow"}</a> &nbsp;·&nbsp; capital ${us(cap,0)} &nbsp;·&nbsp; ${when(D.updated)} &nbsp;·&nbsp; <span class="${stale?"off":""}">${stale?"offline for "+Math.round(age/60)+" min":"live"}</span>`;
   const n=D.markets.reduce((a,m)=>a+m.fills,0), vol=D.markets.reduce((a,m)=>a+m.fl.reduce((x,f)=>x+f[2]*f[3],0),0), h=D.hourly||{n:0};
   const st=(l,v,nn,c)=>`<div class="st"><div class="l">${l}</div><div class="v ${c||""}">${v}</div><div class="n">${nn}</div></div>`;
-  $("stats").innerHTML=st("P&L",sg(D.total_mid)+" $","si liquidé "+sg(D.total_liq)+" $",ng(D.total_mid))+
-    st("Investi",D.invested==null?"…":num(D.invested)+" $",D.invested==null?"":num(100*D.invested/cap,1)+" % du portefeuille")+
-    st("Sharpe · 1 h",h.sharpe==null?"…":pl(h.sharpe),h.n+" heure"+(h.n>1?"s":""))+
-    st("Variance · 1 h",h.var==null?"…":num(h.var,h.var<1?4:2)+" $²",h.var==null?h.n+" heure"+(h.n>1?"s":""):"écart type "+num(Math.sqrt(h.var))+" $")+
-    st("Perte max",D.dd==null?"…":(D.dd>0?"−":"")+num(D.dd)+" $","depuis un sommet")+st("Exécutions",n.toLocaleString("fr-FR"),"volume "+num(vol,0)+" $");
+  $("stats").innerHTML=st("P&L",su(D.total_mid),"if liquidated "+su(D.total_liq),ng(D.total_mid))+
+    st("Capital at risk",us(D.invested),D.invested==null?"":num(100*D.invested/cap,1)+"% of capital")+
+    st("Sharpe · hourly",h.sharpe==null?"…":pl(h.sharpe),h.n+" hour"+(h.n>1?"s":"")+", not annualized")+
+    st("Variance · hourly",h.var==null?"…":num(h.var,h.var<1?4:2)+" $²",h.var==null?h.n+" hour"+(h.n>1?"s":""):"std dev "+us(Math.sqrt(h.var)))+
+    st("Max drawdown",D.dd==null?"…":us(-D.dd),"peak to trough")+st("Fills",n.toLocaleString("en-US"),"volume "+us(vol,0));
   pnlChart($("c1"));
   const kv=(a,b,c)=>`<div class="kv"><span title="${esc(a)}">${esc(a)}</span><span class="${c||""}">${b}</span></div>`;
-  let side=`<h3>D'où vient le P&amp;L</h3>`+kv("Marge sur l'écart",D.spread==null?"…":sg(D.spread)+" $",ng(D.spread))+kv("Variation du stock",D.spread==null?"…":sg(D.total_mid-D.spread)+" $",ng(D.total_mid-D.spread));
-  if(G) side+=`<h3 class="s" title="Modèle one-touch, ${esc(G.source)}. Delta et gamma pour BTC +1 %, vega pour +1 point de volatilité.">Grecques · BTC ${num(G.spot,0)} $</h3>`+[["Delta",G.delta,2],["Gamma",G.gamma,3],["Vega",G.vega,2],["Theta · par jour",G.theta,2]].map(([a,v,d])=>kv(a,G.priced?sg(v,d)+" $"+(a==="Delta"&&D.limits?` / ±${num(D.limits.delta)}`:""):"s. o.",G.priced?(a==="Delta"&&D.limits&&Math.abs(v)>=D.limits.delta?"neg":""):"mut")).join("");
+  let side=`<h3>P&amp;L attribution</h3>`+kv("Spread capture",su(D.spread),ng(D.spread))+kv("Inventory P&L",D.spread==null?"…":su(D.total_mid-D.spread),ng(D.total_mid-D.spread));
+  if(G) side+=`<h3 class="s" title="One-touch model, ${esc(G.source)}. Delta and gamma per +1% BTC, vega per +1 vol point.">Greeks · BTC ${us(G.spot,0)}</h3>`+[["Delta",G.delta,2],["Gamma",G.gamma,3],["Vega",G.vega,2],["Theta · per day",G.theta,2]].map(([a,v,d])=>kv(a,G.priced?su(v,d)+(a==="Delta"&&D.limits?` / ±${num(D.limits.delta)}`:""):"n/a",G.priced?(a==="Delta"&&D.limits&&Math.abs(v)>=D.limits.delta?"neg":""):"mut")).join("");
   const ex=Object.entries(D.exposure||{}).sort((a,b)=>b[1]-a[1]), cnt=u=>D.markets.filter(m=>m.under===u).length;
-  side+=`<h3 class="s">Exposition</h3>`+ex.map(([u,v])=>{const c=cnt(u), one=D.markets.find(m=>m.under===u); return kv(c>1||!one||one.slug!==u?`${u} · ${c} marché${c>1?"s":""}`:name(one),num(v)+" $")}).join("");
+  side+=`<h3 class="s">Exposure</h3>`+ex.map(([u,v])=>{const c=cnt(u), one=D.markets.find(m=>m.under===u); return kv(c>1||!one||one.slug!==u?`${u} · ${c} market${c>1?"s":""}`:name(one),us(v))}).join("");
   const S=D.scan, stop=D.markets.filter(m=>m.stopped).length, gone=D.missing||[], miss=gone.filter(x=>!D.markets.some(m=>m.slug===x));
-  side+=`<h3 class="s">État</h3>`+kv("Marchés cotés",(D.markets.length-stop-(gone.length-miss.length))+" / "+(D.markets.length+miss.length))+(stop?kv("À l'arrêt après perte",stop,"neg"):"")+(gone.length?kv("Absents de l'enregistreur",gone.length,"neg"):"");
-  if(D.execution) side+=`<h3 class="s">Exécution</h3>`+Object.entries(D.execution).filter(([,v])=>v!==null&&typeof v!=="object").map(([k,v])=>kv(XL[k]||k,typeof v==="number"?(Number.isInteger(v)?v:num(v)):v===true?"oui":v===false?"non":esc(v),k==="halt"&&v?"neg":"")).join("");
-  if(S) side+=`<h3 class="s">Scan du ${when(S.generated,{day:"numeric",month:"short"})} · ${S.measured} marchés</h3>`+kv("Retenus",S.selected.length)+kv("Retenus non cotés",S.new.length,S.new.length?"neg":"")+kv("Cotés non retenus",S.dropped.length,S.dropped.length?"neg":"");
+  side+=`<h3 class="s">Status</h3>`+kv("Markets quoted",(D.markets.length-stop-(gone.length-miss.length))+" / "+(D.markets.length+miss.length))+(stop?kv("Stopped out",stop,"neg"):"")+(gone.length?kv("Not in the recorder",gone.length,"neg"):"");
+  if(D.execution) side+=`<h3 class="s">Execution</h3>`+Object.entries(D.execution).filter(([,v])=>v!==null&&typeof v!=="object").map(([k,v])=>kv(XL[k]||k,typeof v==="number"?(Number.isInteger(v)?v:num(v)):v===true?"yes":v===false?"no":esc(v),k==="halt"&&v?"neg":"")).join("");
+  if(S) side+=`<h3 class="s">Market scan · ${when(S.generated,{day:"numeric",month:"short"})} · ${S.measured} markets</h3>`+kv("Selected",S.selected.length)+kv("Selected, not quoted",S.new.length,S.new.length?"neg":"")+kv("Quoted, not selected",S.dropped.length,S.dropped.length?"neg":"");
   $("side").innerHTML=side;
   $("gh1").hidden=$("gh2").hidden=!G;
-  const cols=G?10:8, g=m=>G?`<td>${m.delta==null?'<span class="mut">s. o.</span>':sg(m.delta)}</td><td>${m.iv==null?'<span class="mut">s. o.</span>':num(100*m.iv,0)+" %"}</td>`:"";
+  const cols=G?10:8, g=m=>G?`<td>${m.delta==null?'<span class="mut">n/a</span>':sg(m.delta)}</td><td>${m.iv==null?'<span class="mut">n/a</span>':num(100*m.iv,0)+"%"}</td>`:"";
   $("mk").innerHTML=D.markets.map(m=>`<tr class="m" data-id="${esc(m.slug)}"><td title="${esc(name(m))}">${esc(name(m))}</td><td class="c"></td><td class="${ng(m.pnl_mid)}">${sg(m.pnl_mid)}</td><td>${m.risk==null?"…":num(m.risk)}</td>`+
     `<td>${m.risk==null?"…":num(100*m.risk/cap,1)+`<span class="pb"><i style="width:${Math.min(100,100*m.risk/Math.max(...D.markets.map(k=>k.risk||0),.01))}%"></i></span>`}</td><td>${pl(m.inv,1)}</td>${g(m)}<td>${m.fills}</td>`+
-    `<td class="${m.stopped||gone.includes(m.slug)?"neg":"mut"}">${gone.includes(m.slug)?"absent":m.stopped?"arrêt":m.fills?"actif":"en attente"}</td></tr>`+(sel===m.slug?`<tr class="d"><td colspan="${cols}"></td></tr>`:"")).join("")+
-    (S?S.new:[]).map(s=>`<tr><td title="${esc(s)}">${esc(name({slug:s}))}</td><td class="c mut">retenu par le scan, pas dans ta liste</td><td colspan="${cols-3}"></td><td class="mut">proposé</td></tr>`).join("")+
-    miss.map(s=>`<tr><td title="${esc(s)}">${esc(name({slug:s}))}</td><td class="c mut">non suivi par l'enregistreur aujourd'hui</td><td colspan="${cols-3}"></td><td class="neg">absent</td></tr>`).join("");
+    `<td class="${m.stopped||gone.includes(m.slug)?"neg":"mut"}">${gone.includes(m.slug)?"missing":m.stopped?"stopped":m.fills?"active":"waiting"}</td></tr>`+(sel===m.slug?`<tr class="d"><td colspan="${cols}"></td></tr>`:"")).join("")+
+    (S?S.new:[]).map(s=>`<tr><td title="${esc(s)}">${esc(name({slug:s}))}</td><td class="c mut">selected by the scan, not quoted</td><td colspan="${cols-3}"></td><td class="mut">candidate</td></tr>`).join("")+
+    miss.map(s=>`<tr><td title="${esc(s)}">${esc(name({slug:s}))}</td><td class="c mut">not recorded today</td><td colspan="${cols-3}"></td><td class="neg">missing</td></tr>`).join("");
   for(const tr of $("mk").querySelectorAll("tr.m")){const m=D.markets.find(k=>k.slug===tr.dataset.id), c=tr.children[1]; c.innerHTML=priceChart(m,Math.max(220,c.clientWidth-16),46,false);
     const d=tr.nextElementSibling; if(d&&d.className==="d") d.firstChild.innerHTML=detail(m,Math.max(300,$("mk").clientWidth))}
 }
@@ -183,7 +183,7 @@ $("gate").addEventListener("submit",async e=>{
   try{
     D=await load($("pw").value); $("pw").value=""; $("gate").hidden=true; $("app").hidden=false; draw();
     setInterval(async()=>{try{D=await load(pwKeep)}catch(_){/* keep the last picture; the next tick retries */} draw()},60000);
-  }catch(x){ key=null; $("err").textContent=x.name==="OperationError"?"Mot de passe incorrect":x.message }
+  }catch(x){ key=null; $("err").textContent=x.name==="OperationError"?"Wrong password":x.message }
 });
 </script>
 </body>
