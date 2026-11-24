@@ -78,7 +78,11 @@ def build(a, mode: str, gcfg: GuardConfig, venue_factory):
             raise SystemExit("--upload needs SMART_DASH_PASSWORD: the snapshot is never uploaded in clear")
         from book_recorder.offload import client_from_env
         client, bucket, _ = client_from_env()
-    pub = Publish(out, password, client, bucket, a.dash_key or f"smart-dashboard/data-{mode}.enc", a.every, gcfg.budget_usdc)
+    guest = os.environ.get("SMART_DASH_GUEST_PASSWORD") or None
+    if guest and (len(guest) < 16 or guest == password):
+        raise SystemExit("SMART_DASH_GUEST_PASSWORD must have 16 characters or more and differ from SMART_DASH_PASSWORD")
+    pub = Publish(out, password, client, bucket, a.dash_key or f"smart-dashboard/data-{mode}.enc", a.every, gcfg.budget_usdc,
+                  guest_password=guest)
     spot = None
     if not a.no_greeks:
         from ..greeks import binance_spot as spot

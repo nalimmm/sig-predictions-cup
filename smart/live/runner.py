@@ -27,8 +27,12 @@ class Publish:
     """data.json (clear, local only), state.json, and the sealed data-<mode>.enc uploaded for the page."""
 
     def __init__(self, out: Path, password: Optional[str], client=None, bucket=None, key: Optional[str] = None,
-                 every_s: float = 60.0, capital: float = 100.0):
+                 every_s: float = 60.0, capital: float = 100.0, guest_password: Optional[str] = None):
         self.out, self.password, self.client, self.bucket, self.key = Path(out), password, client, bucket, key
+        # a second copy sealed with the guest password (same convention as smart.dash.Publisher):
+        # <key>-guest.enc; without a guest password it is overwritten once with b"revoked"
+        self.guest, self.revoked = guest_password, False
+        self.guest_key = key.replace(".enc", "-guest.enc") if key else None
         self.every_s, self.capital, self.next, self.errors = every_s, capital, 0.0, 0
         self.live_from = int(time.time() * 1000)
 
@@ -63,6 +67,24 @@ class Publish:
                                            ContentType="application/octet-stream", CacheControl="no-store")
                 except Exception:
                     self.errors += 1
+            self.write_guest(raw)
+
+    def write_guest(self, raw: bytes):
+        if self.guest:
+            blob = encrypt(json.dumps({**json.loads(raw), "guest": True}, separators=(",", ":")).encode(), self.guest)
+            (self.out / "data-guest.enc").write_bytes(blob)
+        elif self.revoked:
+            return
+        else:
+            blob = b"revoked"
+            (self.out / "data-guest.enc").unlink(missing_ok=True)
+        if self.client is not None and self.guest_key:
+            try:
+                self.client.put_object(Bucket=self.bucket, Key=self.guest_key, Body=blob, ACL="public-read",
+                                       ContentType="application/octet-stream", CacheControl="no-store")
+                self.revoked = not self.guest
+            except Exception:
+                self.errors += 1
 
 
 class Runner:

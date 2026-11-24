@@ -331,3 +331,23 @@ def test_clob_venue_signs_a_post_only_gtc_and_a_fill_and_kill_exit(monkeypatch):
         ("GTC", True, "BUY", "2870000", "7000000")
     v.place(Want("12345", "SELL", 0.40, 10.0), taker=True)
     assert (sent[-1]["orderType"], sent[-1]["postOnly"]) == ("FAK", False)
+
+
+def test_guest_copy_is_sealed_with_its_own_password_then_revoked(tmp_path):
+    from smart.dash import decrypt
+
+    class S3:
+        def __init__(self):
+            self.objs = {}
+
+        def put_object(self, Bucket, Key, Body, **k):
+            self.objs[Key] = Body
+    s3 = S3()
+    raw = json.dumps({"mode": "shadow"}).encode()
+    p = Publish(tmp_path, "owner-password-123456", s3, "b", "smart-dashboard/data-shadow.enc", guest_password="guest-password-1234567")
+    p.write(raw, "{}")
+    assert json.loads(decrypt(s3.objs["smart-dashboard/data-shadow-guest.enc"], "guest-password-1234567")) == {"mode": "shadow", "guest": True}
+    assert json.loads(decrypt(s3.objs["smart-dashboard/data-shadow.enc"], "owner-password-123456")) == {"mode": "shadow"}
+    p.guest = None
+    p.write(raw, "{}")
+    assert s3.objs["smart-dashboard/data-shadow-guest.enc"] == b"revoked"
