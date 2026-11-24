@@ -76,7 +76,7 @@ def main(argv=None):
     ml.add_argument("--no-greeks", action="store_true", help="do not read the BTC price from Binance (no Greeks)")
     sc = sub.add_parser("mm-scan", help="rank the recorded markets for market making")
     sc.add_argument("--data", default="/var/lib/book-recorder")
-    sc.add_argument("--days", required=True)
+    sc.add_argument("--days", required=True, help="2026-11-21..2026-11-23, a list, or last:N for the last N complete days")
     sc.add_argument("--out", required=True, help="scan.csv and scan.json go here")
     sc.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="override a scan threshold")
     dp = sub.add_parser("dash-page", help="upload the dashboard page to object storage (BOOK_S3_* variables)")
@@ -149,6 +149,8 @@ def main(argv=None):
                 px = spot()
                 if px:
                     sim.spot, spot_at = px, time.time()
+                    with open(Path(a.out) / "btc_spot.jsonl", "a") as f:        # kept so a replay can apply the delta limit
+                        f.write(json.dumps({"t": int(spot_at * 1000), "px": px}) + "\n")
                 elif time.time() - spot_at > 600:
                     sim.spot = None
             sim.on_event(ev)
@@ -161,7 +163,13 @@ def main(argv=None):
     if a.cmd == "mm-scan":
         import csv
         from .mm_study import Markouts, scan
-        days = _days(a.days)
+        if a.days.startswith("last:"):              # the last N complete UTC days that were recorded
+            have = sorted(f.name[:10] for f in (Path(a.data) / "book").glob("????-??-??.jsonl.gz") if f.name[:10] < utc_day(time.time() * 1000))
+            days = have[-int(a.days[5:]):]
+            if not days:
+                raise SystemExit("no complete recorded day yet")
+        else:
+            days = _days(a.days)
         mk, n = Markouts(a.data), 0
         for ev in replay(Path(a.data) / "book", days):
             mk.on_event(ev)
@@ -188,7 +196,7 @@ def main(argv=None):
         for r in rows:
             for w in filter(None, (x.strip() for x in r["rejected"].split(";"))):
                 reasons[w] = reasons.get(w, 0) + 1
-        (out / "scan.json").write_text(json.dumps({"days": days, "events_read": n, "markets_measured": len(rows),
+        (out / "scan.json").write_text(json.dumps({"days": days, "generated_ms": int(time.time() * 1000), "events_read": n, "markets_measured": len(rows),
                                                    "selected": keep, "slugs": ",".join(r["slug"] for r in keep),
                                                    "rejections": reasons, "near_misses_one_reason": near}, indent=1))
         print(json.dumps({"markets_measured": len(rows), "selected": keep}, indent=1))

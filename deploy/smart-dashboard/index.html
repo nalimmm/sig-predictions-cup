@@ -143,17 +143,19 @@ function draw(){
   pnlChart($("c1"));
   const kv=(a,b,c)=>`<div class="kv"><span title="${esc(a)}">${esc(a)}</span><span class="${c||""}">${b}</span></div>`;
   let side=`<h3>D'où vient le P&amp;L</h3>`+kv("Marge sur l'écart",D.spread==null?"…":sg(D.spread)+" $",ng(D.spread))+kv("Variation du stock",D.spread==null?"…":sg(D.total_mid-D.spread)+" $",ng(D.total_mid-D.spread));
-  if(G) side+=`<h3 class="s" title="Modèle one-touch, ${esc(G.source)}. Delta et gamma pour BTC +1 %, vega pour +1 point de volatilité.">Grecques · BTC ${num(G.spot,0)} $</h3>`+[["Delta",G.delta,2],["Gamma",G.gamma,3],["Vega",G.vega,2],["Theta · par jour",G.theta,2]].map(([a,v,d])=>kv(a,G.priced?sg(v,d)+" $":"s. o.",G.priced?"":"mut")).join("");
+  if(G) side+=`<h3 class="s" title="Modèle one-touch, ${esc(G.source)}. Delta et gamma pour BTC +1 %, vega pour +1 point de volatilité.">Grecques · BTC ${num(G.spot,0)} $</h3>`+[["Delta",G.delta,2],["Gamma",G.gamma,3],["Vega",G.vega,2],["Theta · par jour",G.theta,2]].map(([a,v,d])=>kv(a,G.priced?sg(v,d)+" $"+(a==="Delta"&&D.limits?` / ±${num(D.limits.delta)}`:""):"s. o.",G.priced?(a==="Delta"&&D.limits&&Math.abs(v)>=D.limits.delta?"neg":""):"mut")).join("");
   const ex=Object.entries(D.exposure||{}).sort((a,b)=>b[1]-a[1]), cnt=u=>D.markets.filter(m=>m.under===u).length;
   side+=`<h3 class="s">Exposition</h3>`+ex.map(([u,v])=>{const c=cnt(u), one=D.markets.find(m=>m.under===u); return kv(c>1||!one||one.slug!==u?`${u} · ${c} marché${c>1?"s":""}`:name(one),num(v)+" $")}).join("");
-  const stop=D.markets.filter(m=>m.stopped).length, miss=D.missing||[];
+  const S=D.scan, stop=D.markets.filter(m=>m.stopped).length, miss=D.missing||[];
   side+=`<h3 class="s">État</h3>`+kv("Marchés cotés",(D.markets.length-stop)+" / "+(D.markets.length+miss.length))+(stop?kv("À l'arrêt après perte",stop,"neg"):"")+(miss.length?kv("Absents de l'enregistreur",miss.length,"neg"):"");
+  if(S) side+=`<h3 class="s">Scan du ${when(S.generated,{day:"numeric",month:"short"})} · ${S.measured} marchés</h3>`+kv("Retenus",S.selected.length)+kv("Retenus non cotés",S.new.length,S.new.length?"neg":"")+kv("Cotés non retenus",S.dropped.length,S.dropped.length?"neg":"");
   $("side").innerHTML=side;
   $("gh1").hidden=$("gh2").hidden=!G;
   const cols=G?10:8, g=m=>G?`<td>${m.delta==null?'<span class="mut">s. o.</span>':sg(m.delta)}</td><td>${m.iv==null?'<span class="mut">s. o.</span>':num(100*m.iv,0)+" %"}</td>`:"";
   $("mk").innerHTML=D.markets.map(m=>`<tr class="m" data-id="${esc(m.slug)}"><td title="${esc(name(m))}">${esc(name(m))}</td><td class="c"></td><td class="${ng(m.pnl_mid)}">${sg(m.pnl_mid)}</td><td>${m.risk==null?"…":num(m.risk)}</td>`+
     `<td>${m.risk==null?"…":num(100*m.risk/cap,1)+`<span class="pb"><i style="width:${Math.min(100,100*m.risk/Math.max(...D.markets.map(k=>k.risk||0),.01))}%"></i></span>`}</td><td>${pl(m.inv,1)}</td>${g(m)}<td>${m.fills}</td>`+
     `<td class="${m.stopped?"neg":"mut"}">${m.stopped?"arrêt":m.fills?"actif":"en attente"}</td></tr>`+(sel===m.slug?`<tr class="d"><td colspan="${cols}"></td></tr>`:"")).join("")+
+    (S?S.new:[]).map(s=>`<tr><td title="${esc(s)}">${esc(name({slug:s}))}</td><td class="c mut">retenu par le scan, pas dans ta liste</td><td colspan="${cols-3}"></td><td class="mut">proposé</td></tr>`).join("")+
     miss.map(s=>`<tr><td title="${esc(s)}">${esc(name({slug:s}))}</td><td class="c mut">non suivi par l'enregistreur aujourd'hui</td><td colspan="${cols-3}"></td><td class="neg">absent</td></tr>`).join("");
   for(const tr of $("mk").querySelectorAll("tr.m")){const m=D.markets.find(k=>k.slug===tr.dataset.id), c=tr.children[1]; c.innerHTML=priceChart(m,Math.max(220,c.clientWidth-16),46,false);
     const d=tr.nextElementSibling; if(d&&d.className==="d") d.firstChild.innerHTML=priceChart(m,Math.max(300,$("mk").clientWidth),240,true)}

@@ -123,7 +123,9 @@ class Publisher:
         if self.clock() < self.next:
             return False
         self.next = self.clock() + self.every_s
-        raw = json.dumps(snapshot(sim, int(self.clock() * 1000), self.capital, self.live_from), separators=(",", ":")).encode("utf-8")
+        snap = snapshot(sim, int(self.clock() * 1000), self.capital, self.live_from)
+        snap["scan"] = self.scan(sim)
+        raw = json.dumps(snap, separators=(",", ":")).encode("utf-8")
         tmp = self.out / "data.json.tmp"
         tmp.write_bytes(raw)
         tmp.replace(self.out / "data.json")
@@ -139,6 +141,19 @@ class Publisher:
                 except Exception:               # the simulator must not stop because storage is down
                     self.errors += 1
         return True
+
+
+    def scan(self, sim) -> Optional[dict]:
+        """The last regular scan (deploy/smart-mm-scan.timer), as a proposal: the quoted list only
+        changes when the owner edits it."""
+        try:
+            d = json.loads((self.out / "scan" / "scan.json").read_text())
+            sel = [x for x in d["slugs"].split(",") if x]
+            return {"days": d["days"], "generated": d.get("generated_ms"), "measured": d["markets_measured"],
+                    "selected": sel, "new": [x for x in sel if x not in sim.slugs],
+                    "dropped": [x for x in sim.slugs if x not in sel]}
+        except Exception:
+            return None
 
 
 def upload_page(client, bucket: str, page_path, key: str = "smart-dashboard/index.html") -> str:

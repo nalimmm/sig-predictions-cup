@@ -1,0 +1,18 @@
+[Unit]
+Description=Smart pod: daily scan of the recorded markets for market making (a proposal, changes nothing by itself)
+
+[Service]
+Type=oneshot
+User=bot
+WorkingDirectory=/opt/smart-mm
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=smart-mm
+ExecStart=/opt/sig-predictions-cup/.venv/bin/python -m smart mm-scan --data /var/lib/book-recorder --days last:3 --out /var/lib/smart-mm/scan
+Nice=15
+IOSchedulingClass=idle
+MemoryMax=700M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/smart-mm
+ProtectHome=true
+PrivateTmp=true

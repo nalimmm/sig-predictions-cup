@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily market scan for the Smart market maker, after the day file rolls over
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

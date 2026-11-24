@@ -24,7 +24,11 @@ fi
 echo "markets: $(tr ',' '\n' < /etc/smart-mm.env | wc -l)"
 
 sed "s#/opt/sig-predictions-cup/.venv/bin/python#$PY#" "$ROOT/deploy/smart-mm-live.service" > /etc/systemd/system/smart-mm-live.service
+sed "s#/opt/sig-predictions-cup/.venv/bin/python#$PY#" "$ROOT/deploy/smart-mm-scan.service" > /etc/systemd/system/smart-mm-scan.service
+cp "$ROOT/deploy/smart-mm-scan.timer" /etc/systemd/system/smart-mm-scan.timer
 systemctl daemon-reload
+systemctl enable --now smart-mm-scan.timer
+echo "scan timer: $(systemctl is-active smart-mm-scan.timer || true), next $(systemctl show smart-mm-scan.timer -p NextElapseUSecRealtime --value)"
 
 ( set -a; . /etc/book-recorder.env; set +a; cd "$ROOT" && "$PY" -m smart dash-page --page deploy/smart-dashboard/index.html )
 
