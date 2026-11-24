@@ -70,10 +70,16 @@ const when=(t,o)=>new Date(t).toLocaleString("en-US",o||{day:"numeric",month:"sh
 const hm=t=>when(t,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",hour12:false});
 const SHADOW=new URLSearchParams(location.search).get("src")==="shadow", SRC=SHADOW?"data-shadow.enc":"data.enc";   // ?src=shadow: the shadow run of the live executor
 const XL={resting:"Resting orders",placed:"Placed",cancelled:"Cancelled",fills:"Fills",refused:"Rejected",committed:"Committed",budget:"Budget",halt:"Halted"};
-let key=null, salt=null, pwKeep=null, D=null, sel=null, rng=24;   // the password stays in memory only, to follow a new salt
+let file=null, key=null, salt=null, pwKeep=null, D=null, sel=null, rng=24;   // the password stays in memory only, to follow a new salt
 
+async function unlock(password){      // the owner's file first, then the guest copy sealed with another password
+  file=SRC; key=null;
+  try{return await load(password)}catch(x){ if(x.name!=="OperationError") throw x }
+  file=SRC.replace(".enc","-guest.enc"); key=null;
+  try{return await load(password)}catch(_){ throw new Error("Wrong password") }
+}
 async function load(password){
-  const r=await fetch(SRC+"?"+Date.now(),{cache:"no-store"});
+  const r=await fetch(file+"?"+Date.now(),{cache:"no-store"});
   if(!r.ok) throw new Error("Data not found ("+r.status+")");
   const b=new Uint8Array(await r.arrayBuffer());
   if(dec.decode(b.slice(0,4))!=="BCM1") throw new Error("Unexpected file");
@@ -146,7 +152,7 @@ const detail=(m,W)=>`<div class="rg">${[[6,"6h"],[24,"24h"],[0,"all"]].map(([h,l
 
 function draw(){
   const age=Math.round((Date.now()-D.updated)/1000), stale=age>240, cap=D.capital??100, G=D.greeks;
-  $("status").innerHTML=`${D.mode==="shadow"?"Shadow mode":"Paper simulation"} &nbsp;·&nbsp; <a href="${SHADOW?"?":"?src=shadow"}">${SHADOW?"view paper":"view shadow"}</a> &nbsp;·&nbsp; capital ${us(cap,0)} &nbsp;·&nbsp; ${when(D.updated)} &nbsp;·&nbsp; <span class="${stale?"off":""}">${stale?"offline for "+Math.round(age/60)+" min":"live"}</span>`;
+  $("status").innerHTML=`${D.mode==="shadow"?"Shadow mode":"Paper simulation"} &nbsp;·&nbsp; <a href="${SHADOW?"?":"?src=shadow"}">${SHADOW?"view paper":"view shadow"}</a> &nbsp;·&nbsp;${D.guest?" guest view &nbsp;·&nbsp;":""} capital ${us(cap,0)} &nbsp;·&nbsp; ${when(D.updated)} &nbsp;·&nbsp; <span class="${stale?"off":""}">${stale?"offline for "+Math.round(age/60)+" min":"live"}</span>`;
   const n=D.markets.reduce((a,m)=>a+m.fills,0), vol=D.markets.reduce((a,m)=>a+m.fl.reduce((x,f)=>x+f[2]*f[3],0),0), h=D.hourly||{n:0};
   const st=(l,v,nn,c)=>`<div class="st"><div class="l">${l}</div><div class="v ${c||""}">${v}</div><div class="n">${nn}</div></div>`;
   $("stats").innerHTML=st("P&L",su(D.total_mid),"if liquidated "+su(D.total_liq),ng(D.total_mid))+
@@ -181,7 +187,7 @@ let rz; addEventListener("resize",()=>{clearTimeout(rz); rz=setTimeout(()=>D&&dr
 $("gate").addEventListener("submit",async e=>{
   e.preventDefault(); $("err").textContent="…";
   try{
-    D=await load($("pw").value); $("pw").value=""; $("gate").hidden=true; $("app").hidden=false; draw();
+    D=await unlock($("pw").value); $("pw").value=""; $("gate").hidden=true; $("app").hidden=false; draw();
     setInterval(async()=>{try{D=await load(pwKeep)}catch(_){/* keep the last picture; the next tick retries */} draw()},60000);
   }catch(x){ key=null; $("err").textContent=x.name==="OperationError"?"Wrong password":x.message }
 });

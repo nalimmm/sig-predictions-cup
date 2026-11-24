@@ -138,7 +138,12 @@ def main(argv=None):
         spot = None
         if not a.no_greeks:
             from .greeks import binance_spot as spot
-        pub = Publisher(a.out, password, client, bucket, every_s=a.every)
+        guest = os.environ.get("SMART_DASH_GUEST_PASSWORD") or None     # optional, same file as the owner's password
+        if guest and (len(guest) < 16 or guest == password):
+            log.error("guest password ignored: it must have 16 characters or more and differ from the owner's")
+            guest = None
+        pub = Publisher(a.out, password, client, bucket, every_s=a.every, guest_password=guest)
+        log.info("guest access: %s", "on" if guest else "off")
         spot_next, spot_at = 0.0, 0.0
         saved, legacy = Path(a.out) / "state.json", Path(a.out) / "data.json"
         if not a.fresh and (saved.exists() or legacy.exists()):

@@ -9,6 +9,7 @@ WorkingDirectory=/opt/smart-mm
 # Three files, none in the repository:
 #   /etc/book-recorder.env  object storage credentials (the recorder's file)
 #   /etc/smart-dash.env     root only, written by the owner alone: SMART_DASH_PASSWORD="a phrase of 16 characters or more"
+#                           optional second line SMART_DASH_GUEST_PASSWORD="another phrase" for a visitor; remove it to cut the access
 #   /etc/smart-mm.env       not secret: SMART_MM_SLUGS=<comma separated slugs chosen from mm-scan>
 EnvironmentFile=/etc/book-recorder.env
 EnvironmentFile=/etc/smart-dash.env

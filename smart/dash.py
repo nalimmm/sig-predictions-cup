@@ -112,8 +112,9 @@ class Publisher:
 
     def __init__(self, out_dir, password: Optional[str] = None, client=None, bucket: Optional[str] = None,
                  key: str = "smart-dashboard/data.enc", every_s: float = 60.0, clock=time.time,
-                 capital: float = 100.0):
+                 capital: float = 100.0, guest_password: Optional[str] = None):
         self.out = Path(out_dir)
+        self.guest, self.guest_key, self.revoked = guest_password, key.replace(".enc", "-guest.enc"), False
         self.out.mkdir(parents=True, exist_ok=True)
         self.password, self.client, self.bucket, self.key = password, client, bucket, key
         self.every_s, self.clock, self.next = every_s, clock, 0.0
@@ -144,7 +145,28 @@ class Publisher:
                     self.uploads += 1
                 except Exception:               # the simulator must not stop because storage is down
                     self.errors += 1
+            self.publish_guest(snap)
         return True
+
+    def publish_guest(self, snap: dict):
+        """A second copy sealed with the guest password, for a visitor: the owner's password is
+        never shared, and the guest one can be changed or removed alone. Without a guest password
+        the copy in storage is overwritten once, so an old guest password stops opening anything."""
+        if self.guest:
+            blob = encrypt(json.dumps({**snap, "guest": True}, separators=(",", ":")).encode("utf-8"), self.guest)
+            (self.out / "data-guest.enc").write_bytes(blob)
+        elif self.revoked:
+            return
+        else:
+            blob, self.revoked = b"revoked", True
+            (self.out / "data-guest.enc").unlink(missing_ok=True)
+        if self.client is not None:
+            try:
+                self.client.put_object(Bucket=self.bucket, Key=self.guest_key, Body=blob, ACL="public-read",
+                                       ContentType="application/octet-stream", CacheControl="no-store")
+            except Exception:
+                self.errors += 1
+                self.revoked = False                # try the revocation again at the next snapshot
 
 
     def scan(self, sim) -> Optional[dict]:

@@ -512,7 +512,8 @@ def test_dashboard_snapshot_is_sealed_with_the_password_and_never_uploaded_in_cl
     assert pub.maybe(sim) and not pub.maybe(sim)                    # once per period
     d = _json.loads((tmp_path / "dash" / "data.json").read_text())
     assert d["mode"] == "paper" and d["markets"][0]["fills"] == 1 and d["markets"][0]["fl"][0][1] == 1
-    assert len(sent) == 1 and sent[0]["Key"].endswith("data.enc") and b"slug" not in sent[0]["Body"]
+    assert len(sent) == 2 and sent[0]["Key"].endswith("data.enc") and b"slug" not in sent[0]["Body"]
+    assert sent[1]["Key"].endswith("data-guest.enc") and sent[1]["Body"] == b"revoked"     # no guest password: no guest access
     m = d["markets"][0]                                             # what was paid for the position is what can be lost
     assert abs(m["risk"] - m["inv"] * m["fl"][0][2]) < 0.01 and abs(d["invested"] - m["risk"]) < 1e-6
     assert d["greeks"] is None and d["capital"] == 100.0 and d["live_from"] == 1000000 and d["missing"] == []
@@ -522,6 +523,25 @@ def test_dashboard_snapshot_is_sealed_with_the_password_and_never_uploaded_in_cl
         decrypt(sent[0]["Body"], "mauvais mot de passe !")
     with pytest.raises(ValueError):
         encrypt(b"x", "court")
+    # a visitor's copy under another password; taking the password away overwrites it
+    sent.clear()
+    pub = Publisher(tmp_path / "g", pw, Client(), "bucket", clock=lambda: 1000.0, guest_password="une autre phrase longue")
+    pub.maybe(sim)
+    assert [x["Key"] for x in sent] == ["smart-dashboard/data.enc", "smart-dashboard/data-guest.enc"]
+    g = _json.loads(decrypt(sent[1]["Body"], "une autre phrase longue"))
+    assert g["guest"] is True and g["total_mid"] == d["total_mid"]
+    with pytest.raises(Exception):
+        decrypt(sent[1]["Body"], pw)                                # the owner's password does not open the guest copy
+    with pytest.raises(Exception):
+        decrypt(sent[0]["Body"], "une autre phrase longue")         # nor the guest's the owner's
+    sent.clear()
+    t = [1000.0]
+    pub = Publisher(tmp_path / "g", pw, Client(), "bucket", clock=lambda: t[0])
+    pub.maybe(sim)
+    t[0] += 100
+    pub.maybe(sim)
+    assert [x["Key"] for x in sent].count("smart-dashboard/data-guest.enc") == 1 and sent[1]["Body"] == b"revoked"
+    assert not (tmp_path / "g" / "data-guest.enc").exists()
 
 
 def test_dashboard_hourly_statistics_and_underlyings():
