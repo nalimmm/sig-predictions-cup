@@ -441,6 +441,21 @@ class MMSim:
             q.pending = (self.now + int(cfg.latency_s * 1000),) + want
 
     # ------------------------------------------------------------ results
+    @staticmethod
+    def edge(q: Quoter) -> float:
+        """Spread earned: for each fill, how far from the mid of that moment we traded, less the
+        taker fees. What the price did afterwards is inventory P&L, not spread. A fill restored
+        without its mid takes the last sampled mid before it."""
+        tot, k = -q.fees, 0
+        for f in q.fills:
+            mid = f.get("mid")
+            if mid is None:
+                while k + 1 < len(q.nav_path) and q.nav_path[k + 1][0] <= f["t"]:
+                    k += 1
+                mid = q.nav_path[k][2] if q.nav_path else f["price"]
+            tot += f["shares"] * (mid - f["price"]) * (1 if f["side"] == "BUY" else -1)
+        return tot
+
     def result(self, q: Quoter, days: float) -> dict:
         mid = q.last_mid or 0.0
         liq = (q.last_bid if q.inv > 0 else q.last_ask) or mid
@@ -463,7 +478,8 @@ class MMSim:
                 "shares_bought": round(q.bought, 1), "shares_sold": round(q.sold, 1),
                 "avg_buy": round(avg_buy, 4) if avg_buy else None, "avg_sell": round(avg_sell, 4) if avg_sell else None,
                 "round_trip_shares": round(matched, 1),
-                "spread_captured_usdc": round(matched * (avg_sell - avg_buy), 4) if matched else 0.0,
+                "round_trip_gain_usdc": round(matched * (avg_sell - avg_buy), 4) if matched else 0.0,
+                "spread_captured_usdc": round(self.edge(q), 4),
                 "inventory_end_shares": round(q.inv, 2), "last_mid": round(mid, 4),
                 "pnl_at_mid_usdc": round(q.cash + q.inv * mid, 4),
                 "pnl_if_liquidated_usdc": round(q.cash + q.inv * liq, 4),

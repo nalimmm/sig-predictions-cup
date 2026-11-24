@@ -424,6 +424,17 @@ def test_mm_state_survives_a_restart_and_nothing_trades_while_down(tmp_path):
         assert abs(r.bought - q.bought) < 1e-9 and r.nav_path[0] == tuple(q.nav_path[0])
 
 
+def test_mm_spread_is_measured_against_the_mid_of_each_fill():
+    from smart.mm import MMSim, Quoter
+    q = Quoter(token="t", slug="m", end_ms=None)
+    q.nav_path = [(0, 0.0, 0.50, 0.0), (300000, 0.0, 0.60, 0.0)]
+    q.fills = [{"t": 1000, "side": "BUY", "price": 0.49, "shares": 10, "mid": 0.50},      # one cent inside the mid
+               {"t": 400000, "side": "SELL", "price": 0.61, "shares": 10, "mid": None}]    # restored: mid 0.60 from the path
+    assert abs(MMSim.edge(q) - 0.20) < 1e-9          # 2 cents of spread; the 10 cents of price move are not spread
+    q.fees = 0.05
+    assert abs(MMSim.edge(q) - 0.15) < 1e-9
+
+
 C, D = "333", "444"
 BTC1, BTC2 = "will-bitcoin-dip-to-60k-in-x", "will-bitcoin-dip-to-55k-in-x"
 
