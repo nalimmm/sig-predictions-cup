@@ -429,6 +429,20 @@ def test_mm_state_survives_a_restart_and_nothing_trades_while_down(tmp_path):
     assert list(back.q["saved:m"].quotes) == list(q.quotes)                         # kept across the restart
 
 
+def test_mm_scan_over_a_rolling_window_skips_what_is_older(tmp_path, monkeypatch):
+    import json as _json
+    import time as _time
+    lines = wide(T0, 0.40, 0.50) + [trade(T0 + 1000, A, 0.41, 100, "SELL")]              # 10 hours before "now"
+    lines += wide(T0 + 9 * 3600000, 0.40, 0.50) + [trade(T0 + 9 * 3600000 + 1000, A, 0.41, 50, "SELL")]
+    write_day(tmp_path / "data", lines)
+    monkeypatch.setattr(_time, "time", lambda: (T0 + 10 * 3600000) / 1000)
+    smart_main(["mm-scan", "--data", str(tmp_path / "data"), "--hours", "2", "--out", str(tmp_path / "s2")])
+    smart_main(["mm-scan", "--data", str(tmp_path / "data"), "--hours", "12", "--out", str(tmp_path / "s12")])
+    two, twelve = (_json.loads((tmp_path / d / "scan.json").read_text()) for d in ("s2", "s12"))
+    assert two["days"] == twelve["days"] == [DAY] and two["hours"] == 2.0
+    assert 0 < two["events_read"] < twelve["events_read"]
+
+
 def test_mm_spread_is_measured_against_the_mid_of_each_fill():
     from smart.mm import MMSim, Quoter
     q = Quoter(token="t", slug="m", end_ms=None)

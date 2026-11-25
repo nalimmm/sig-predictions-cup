@@ -175,7 +175,7 @@ class Publisher:
         try:
             d = json.loads((self.out / "scan" / "scan.json").read_text())
             sel = [x for x in d["slugs"].split(",") if x]
-            return {"days": d["days"], "generated": d.get("generated_ms"), "measured": d["markets_measured"],
+            return {"days": d["days"], "hours": d.get("hours"), "generated": d.get("generated_ms"), "measured": d["markets_measured"],
                     "selected": sel, "new": [x for x in sel if x not in sim.slugs],
                     "dropped": [x for x in sim.slugs if x not in sel]}
         except Exception:

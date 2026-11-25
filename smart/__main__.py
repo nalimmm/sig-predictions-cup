@@ -77,7 +77,8 @@ def main(argv=None):
     ml.add_argument("--no-greeks", action="store_true", help="do not read the BTC price from Binance (no Greeks)")
     sc = sub.add_parser("mm-scan", help="rank the recorded markets for market making")
     sc.add_argument("--data", default="/var/lib/book-recorder")
-    sc.add_argument("--days", required=True, help="2026-11-21..2026-11-23, a list, or last:N for the last N complete days")
+    sc.add_argument("--days", help="2026-11-21..2026-11-23, a list, or last:N for the last N complete days")
+    sc.add_argument("--hours", type=float, help="instead of --days: the last N hours up to now, the current day included")
     sc.add_argument("--out", required=True, help="scan.csv and scan.json go here")
     sc.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="override a scan threshold")
     dp = sub.add_parser("dash-page", help="upload the dashboard page to object storage (BOOK_S3_* variables)")
@@ -176,7 +177,17 @@ def main(argv=None):
     if a.cmd == "mm-scan":
         import csv
         from .mm_study import Markouts, scan
-        if a.days.startswith("last:"):              # the last N complete UTC days that were recorded
+        cutoff, today = 0, None
+        if a.hours:                                 # a rolling window: the files it touches, events older than it skipped
+            now = time.time()
+            cutoff, today = int((now - a.hours * 3600) * 1000), utc_day(now * 1000)
+            have = sorted(f.name[:10] for f in (Path(a.data) / "book").glob("????-??-??.jsonl.gz"))
+            days = [d for d in have if utc_day(cutoff) <= d <= today]
+            if not days:
+                raise SystemExit("nothing recorded in the window")
+        elif not a.days:
+            raise SystemExit("give --days or --hours")
+        elif a.days.startswith("last:"):            # the last N complete UTC days that were recorded
             have = sorted(f.name[:10] for f in (Path(a.data) / "book").glob("????-??-??.jsonl.gz") if f.name[:10] < utc_day(time.time() * 1000))
             days = have[-int(a.days[5:]):]
             if not days:
@@ -185,12 +196,16 @@ def main(argv=None):
             days = _days(a.days)
         mk, n = Markouts(a.data), 0
         for ev in replay(Path(a.data) / "book", days):
+            if cutoff and (ev.get("_r") or cutoff) < cutoff:
+                continue
             mk.on_event(ev)
             n += 1
             if n % 2_000_000 == 0:
                 log.info("%d events, %d markets", n, len(mk.acc))
+        if a.hours:
+            mk.days = a.hours / 24                  # per-day figures over the window, not over the files read
         over = {k: float(v) for k, v in (x.split("=", 1) for x in a.set)}
-        rows = scan(mk.rows(), date.fromisoformat(days[-1]).isoformat(), **over)
+        rows = scan(mk.rows(), today or date.fromisoformat(days[-1]).isoformat(), **over)
         out = Path(a.out)
         out.mkdir(parents=True, exist_ok=True)
         if rows:
@@ -209,7 +224,7 @@ def main(argv=None):
         for r in rows:
             for w in filter(None, (x.strip() for x in r["rejected"].split(";"))):
                 reasons[w] = reasons.get(w, 0) + 1
-        (out / "scan.json").write_text(json.dumps({"days": days, "generated_ms": int(time.time() * 1000), "events_read": n, "markets_measured": len(rows),
+        (out / "scan.json").write_text(json.dumps({"days": days, "hours": a.hours, "generated_ms": int(time.time() * 1000), "events_read": n, "markets_measured": len(rows),
                                                    "selected": keep, "slugs": ",".join(r["slug"] for r in keep),
                                                    "rejections": reasons, "near_misses_one_reason": near}, indent=1))
         print(json.dumps({"markets_measured": len(rows), "selected": keep}, indent=1))

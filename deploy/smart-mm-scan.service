@@ -1,5 +1,5 @@
 [Unit]
-Description=Smart pod: daily scan of the recorded markets for market making (a proposal, changes nothing by itself)
+Description=Smart pod: scan of the recorded markets for market making, last 72 hours (a proposal, changes nothing by itself)
 
 [Service]
 Type=oneshot
@@ -7,8 +7,11 @@ User=bot
 WorkingDirectory=/opt/smart-mm
 Environment=PYTHONUNBUFFERED=1
 StateDirectory=smart-mm
-ExecStart=/opt/sig-predictions-cup/.venv/bin/python -m smart mm-scan --data /var/lib/book-recorder --days last:3 --out /var/lib/smart-mm/scan
+ExecStart=/opt/sig-predictions-cup/.venv/bin/python -m smart mm-scan --data /var/lib/book-recorder --hours 72 --out /var/lib/smart-mm/scan
 Nice=15
+# The CPU is shared by weight between services (100 by default): at 5 the scan only takes what the
+# recorder, the paper simulator and the shadow executor leave, however busy the markets are.
+CPUWeight=5
 IOSchedulingClass=idle
 MemoryMax=700M
 NoNewPrivileges=true

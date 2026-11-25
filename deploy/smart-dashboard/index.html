@@ -169,7 +169,7 @@ function draw(){
   const S=D.scan, stop=D.markets.filter(m=>m.stopped).length, gone=D.missing||[], miss=gone.filter(x=>!D.markets.some(m=>m.slug===x));
   side+=`<h3 class="s">Status</h3>`+kv("Markets quoted",(D.markets.length-stop-(gone.length-miss.length))+" / "+(D.markets.length+miss.length))+(stop?kv("Stopped out",stop,"neg"):"")+(gone.length?kv("Not in the recorder",gone.length,"neg"):"");
   if(D.execution) side+=`<h3 class="s">Execution</h3>`+Object.entries(D.execution).filter(([,v])=>v!==null&&typeof v!=="object").map(([k,v])=>kv(XL[k]||k,typeof v==="number"?(Number.isInteger(v)?v:num(v)):v===true?"yes":v===false?"no":esc(v),k==="halt"&&v?"neg":"")).join("");
-  if(S) side+=`<h3 class="s">Market scan · ${when(S.generated,{day:"numeric",month:"short"})} · ${S.measured} markets</h3>`+kv("Selected",S.selected.length)+kv("Selected, not quoted",S.new.length,S.new.length?"neg":"")+kv("Quoted, not selected",S.dropped.length,S.dropped.length?"neg":"");
+  if(S) side+=`<h3 class="s">Market scan · ${when(S.generated,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",hour12:false})} · ${S.measured} markets</h3>`+kv("Selected",S.selected.length)+kv("Selected, not quoted",S.new.length,S.new.length?"neg":"")+kv("Quoted, not selected",S.dropped.length,S.dropped.length?"neg":"");
   $("side").innerHTML=side;
   $("gh1").hidden=$("gh2").hidden=!G;
   const cols=G?10:8, g=m=>G?`<td>${m.delta==null?'<span class="mut">n/a</span>':sg(m.delta)}</td><td>${m.iv==null?'<span class="mut">n/a</span>':num(100*m.iv,0)+"%"}</td>`:"";
