@@ -178,6 +178,11 @@ def main(argv=None):
                 try:
                     if sim.on_scan(json.loads((Path(a.out) / "scan" / "scan.json").read_text())):
                         log.info("scan counted, failed in a row: %s", {k: v for k, v in sim.scan_fails.items() if v})
+                        with open(Path(a.out) / "scan_history.jsonl", "a") as f:    # for the review: verdict against result, per market
+                            f.write(json.dumps({"t": sim.scan_seen, "markets": {
+                                q.slug: {"why": sim.scan_why.get(q.slug), "fails": sim.scan_fails.get(q.slug, 0),
+                                         "pnl": round(q.cash + q.inv * (q.last_mid or 0), 4), "spread": round(sim.edge(q), 4),
+                                         "fills": len(q.fills)} for q in sim.q.values()}}) + "\n")
                 except (OSError, ValueError):
                     pass
             sim.on_event(ev)

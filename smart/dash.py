@@ -55,7 +55,7 @@ def snapshot(sim, now_ms: Optional[int] = None, capital: float = 100.0, live_fro
         markets.append({
             "slug": q.slug, "fills": r["fills"], "buys": r["buys"], "sells": r["sells"],
             "pnl": r["pnl_if_liquidated_usdc"], "pnl_mid": r["pnl_at_mid_usdc"], "dd": r["max_drawdown_usdc"],
-            "stopped": r["stopped"], "scan_fails": sim.scan_fails.get(q.slug, 0), "held": sim.held(q), "inv": r["inventory_end_shares"], "mid": r["last_mid"],
+            "stopped": r["stopped"], "scan_fails": sim.scan_fails.get(q.slug, 0), "scan_why": sim.scan_why.get(q.slug), "held": sim.held(q), "inv": r["inventory_end_shares"], "mid": r["last_mid"],
             "risk": round(at_risk(q), 4), "fees": round(q.fees, 4), "spread": r["spread_captured_usdc"], "under": underlying(q.slug),
             "title": next((m.get("question") for m in sim.markets.values() if m.get("slug") == q.slug and m.get("question")), None),
             "nav": [[sec(t), nav, mid, inv] for t, nav, mid, inv in q.nav_path],
@@ -153,7 +153,8 @@ class Publisher:
         never shared, and the guest one can be changed or removed alone. Without a guest password
         the copy in storage is overwritten once, so an old guest password stops opening anything."""
         if self.guest:
-            blob = encrypt(json.dumps({**snap, "guest": True}, separators=(",", ":")).encode("utf-8"), self.guest)
+            mk = [{k: v for k, v in m.items() if k not in ("scan_fails", "scan_why")} for m in snap.get("markets", [])]
+            blob = encrypt(json.dumps({**snap, "markets": mk, "guest": True}, separators=(",", ":")).encode("utf-8"), self.guest)
             (self.out / "data-guest.enc").write_bytes(blob)
         elif self.revoked:
             return

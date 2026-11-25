@@ -152,6 +152,7 @@ class MMSim:
         self.spot: Optional[float] = None           # BTC price, set by the live loop; None: no delta limit
         self.scan_fails: Dict[str, int] = {}        # slug -> scans failed in a row
         self.scan_seen = 0                          # generated_ms of the last scan counted
+        self.scan_why: Dict[str, str] = {}          # slug -> what the last scan said ("" = passes)
 
     # ------------------------------------------------------------ staying in the list
     RANKING = ("another market of the same event ranks higher", "below the top")
@@ -166,6 +167,7 @@ class MMSim:
         self.scan_seen = gen
         for slug in self.slugs:
             if slug in verdicts:
+                self.scan_why[slug] = verdicts[slug]
                 why = [w.strip() for w in verdicts[slug].split(";") if w.strip()]
                 bad = any(not w.startswith(self.RANKING) for w in why)
                 self.scan_fails[slug] = self.scan_fails.get(slug, 0) + 1 if bad else 0
@@ -201,7 +203,7 @@ class MMSim:
             "pulls", "quote_updates", "quoted_s", "last_mid", "last_bid", "last_ask", "fees", "taken")
 
     def state(self) -> dict:
-        return {"version": 1, "now": self.now, "scan": {"fails": self.scan_fails, "seen": self.scan_seen}, "quoters": [
+        return {"version": 1, "now": self.now, "scan": {"fails": self.scan_fails, "seen": self.scan_seen, "why": self.scan_why}, "quoters": [
             {"slug": q.slug, **{k: getattr(q, k) for k in self.KEEP}, "fills": q.fills, "nav_path": q.nav_path,
              "quotes": list(q.quotes)}
             for q in self.q.values()]}
@@ -212,6 +214,7 @@ class MMSim:
         the time the simulator was down."""
         self.resume_ms = resume_ms
         self.scan_fails, self.scan_seen = dict(st.get("scan", {}).get("fails", {})), st.get("scan", {}).get("seen", 0)
+        self.scan_why = dict(st.get("scan", {}).get("why", {}))
         for d in st.get("quoters", []):
             q = Quoter(token="saved:" + d["slug"], slug=d["slug"], end_ms=None, under=underlying(d["slug"]))
             for k in self.KEEP:

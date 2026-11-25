@@ -401,7 +401,7 @@ def test_mm_market_failing_the_scan_in_a_row_only_reduces(tmp_path):
     assert sim.on_scan({"generated_ms": 3000, "verdicts": {}}) and sim.scan_fails == {"m": 2}    # not measured: count kept
     back = MMSim(tmp_path / "a" / "data", ["m"], MMConfig(scan_fail_limit=2))
     back.restore(sim.state(), 0)
-    assert back.scan_fails == {"m": 2} and back.scan_seen == 3000
+    assert back.scan_fails == {"m": 2} and back.scan_seen == 3000 and back.scan_why == {"m": bad}
     assert sim.on_scan({"generated_ms": 4000, "verdicts": {"m": ""}}) and not sim.held(sim.q[A])  # passes again: lifted
     assert len(run("b", [bad], scan_fail_limit=2).q[A].fills) == 1                  # one failure is not enough
     assert len(run("c", [bad, "below the top 8", bad], scan_fail_limit=2).q[A].fills) == 1       # ranking alone clears the count
@@ -588,6 +588,7 @@ def test_dashboard_snapshot_is_sealed_with_the_password_and_never_uploaded_in_cl
     assert [x["Key"] for x in sent] == ["smart-dashboard/data.enc", "smart-dashboard/data-guest.enc"]
     g = _json.loads(decrypt(sent[1]["Body"], "une autre phrase longue"))
     assert g["guest"] is True and g["total_mid"] == d["total_mid"]
+    assert "scan_why" in d["markets"][0] and "scan_why" not in g["markets"][0]      # the owner's working notes stay with the owner
     with pytest.raises(Exception):
         decrypt(sent[1]["Body"], pw)                                # the owner's password does not open the guest copy
     with pytest.raises(Exception):
