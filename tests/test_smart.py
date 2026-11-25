@@ -652,3 +652,9 @@ def test_scan_keeps_steady_edges_one_per_event_and_says_why_it_rejects():
     assert r["atp-a-b-2026-11-20"]["days_left"] == -1 and "ends too soon" in r["atp-a-b-2026-11-20"]["rejected"]
     assert "ends too soon" in r["atp-c-d-2026-11-23"]["rejected"] and not r["atp-e-f-2026-11-29"]["rejected"]
     assert r["quiet"]["rejected"] == "no trade lately" and not r["busy"]["rejected"]
+    # only a full day written as YYYY-MM-DD counts: a start day, a range, a creation stamp or a numeric suffix do not
+    names = ["will-ethereum-reach-2300-in-november-2026-from-november-5", "will-wti-reach-90-in-november-2026-from-november-9",
+             "will-bitcoin-dip-to-52k-november-23-29-2026", "will-chiang-wan-an-win-the-next-taipei-mayor-election-20260813125857101",
+             "will-bitcoin-dip-to-55000-by-december-31-2026-527-627-868", "ai-industry-downturn-by-december-31-2026-52-76-857"]
+    r = {x["slug"]: x for x in scan([{**base, "slug": n, "event": n} for n in names], "2026-11-21", top=99)}
+    assert all(r[n]["days_left"] == 40 and not r[n]["rejected"] for n in names)
