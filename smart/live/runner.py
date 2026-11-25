@@ -90,10 +90,11 @@ class Publish:
 class Runner:
     def __init__(self, sim: LiveMM, ex: Executor, guard: Guard, pub: Publish, get: Callable,
                  spot: Optional[Callable] = None, connect=None, stop_file: Path = Path("/etc/smart-live/STOP"),
-                 heartbeat_s: float = 5.0, poll_s: float = 1.0, positions_s: float = 60.0):
+                 heartbeat_s: float = 5.0, poll_s: float = 1.0, positions_s: float = 60.0, scan_file: Optional[Path] = None):
         self.sim, self.ex, self.guard, self.pub, self.get, self.spot = sim, ex, guard, pub, get, spot
         self.connect, self.stop_file = connect, stop_file
         self.heartbeat_s, self.poll_s, self.positions_s = heartbeat_s, poll_s, positions_s
+        self.scan_file = Path(scan_file) if scan_file else None   # the paper service's regular scan, read once a minute
         self.io = ThreadPoolExecutor(1, thread_name_prefix="venue")
         self.side = ThreadPoolExecutor(1, thread_name_prefix="side")
         self.stopping = False
@@ -169,7 +170,7 @@ class Runner:
 
     async def ticker(self):
         loop = asyncio.get_running_loop()
-        next_hb = next_poll = next_pos = next_spot = 0.0
+        next_hb = next_poll = next_pos = next_spot = next_scan = 0.0
         while not self.stopping:
             now = time.time()
             today = utc_day(now * 1000)
@@ -181,6 +182,13 @@ class Runner:
                 self.halt("STOP file")
                 self.stop("STOP file present")
                 break
+            if self.scan_file and now >= next_scan and hasattr(self.sim, "on_scan"):
+                next_scan = now + 60                # a new scan is counted once (the rule is in MMSim.held)
+                try:
+                    if self.sim.on_scan(json.loads(self.scan_file.read_text())):
+                        log.info("scan counted, failed in a row: %s", {k: v for k, v in self.sim.scan_fails.items() if v})
+                except (OSError, ValueError):
+                    pass
             why = self.guard.breakers(self.sim.q.values())
             if why:
                 self.halt(why)

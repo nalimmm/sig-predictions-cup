@@ -351,3 +351,25 @@ def test_guest_copy_is_sealed_with_its_own_password_then_revoked(tmp_path):
     p.guest = None
     p.write(raw, "{}")
     assert s3.objs["smart-dashboard/data-shadow-guest.enc"] == b"revoked"
+
+
+def test_hold_rule_of_the_scan_applies_to_the_shadow(tmp_path):
+    from smart.mm import MMSim
+    if not hasattr(MMSim, "on_scan"):
+        pytest.skip("MMSim without the scan rule")
+    cfg = MMConfig(latency_s=0.0, requote_s=0.0)
+    cfg.scan_fail_limit = 1
+    sim = LiveMM([SLUG], meta(), cfg, mode="shadow")
+    sim.load("2026-11-24")
+    ex = Executor(sim, DryVenue(), Guard(GuardConfig()), Journal(tmp_path / "j"), clock=lambda: sim.now / 1000)
+    ex.feed_ok = True
+    assert sim.on_scan({"generated_ms": 1, "verdicts": {SLUG: "spread of one tick"}})
+    for t in (1_000, 1_001, 2_000, 3_000):
+        sim.on_event(book(t, Y, 0.40, 0.46) if t != 1_001 else book(t, N, 0.54, 0.60))
+        ex.step()
+    assert ex.stats["placed"] == 0                              # flat and held: nothing to reduce, nothing quoted
+    assert sim.on_scan({"generated_ms": 2, "verdicts": {SLUG: ""}})
+    for t in (4_000, 5_000):
+        sim.on_event(book(t, Y, 0.40, 0.46))
+        ex.step()
+    assert ex.stats["placed"] == 2

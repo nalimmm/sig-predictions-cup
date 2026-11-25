@@ -60,6 +60,11 @@ def build(a, mode: str, gcfg: GuardConfig, venue_factory):
         if s not in found:
             log.warning("market not found on Gamma: %s", s)
     cfg = MMConfig.from_dict(json.loads(Path(a.config).read_text())) if a.config else MMConfig()
+    if os.environ.get("SMART_MM_SCAN_FAILS") and hasattr(cfg, "scan_fail_limit"):     # same switch as the paper service
+        cfg.scan_fail_limit = int(os.environ["SMART_MM_SCAN_FAILS"])
+        cfg.scan_exempt = tuple(x.strip() for x in os.environ.get("SMART_MM_SCAN_EXEMPT", "").split(",") if x.strip())
+    log.info("scan rule: %s", f"reduce only after {cfg.scan_fail_limit} failed scans in a row, {len(cfg.scan_exempt)} exempt"
+             if getattr(cfg, "scan_fail_limit", 0) else "off")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     sim = LiveMM(slugs, meta, cfg, mode)
@@ -86,7 +91,7 @@ def build(a, mode: str, gcfg: GuardConfig, venue_factory):
     spot = None
     if not a.no_greeks:
         from ..greeks import binance_spot as spot
-    return Runner(sim, ex, guard, pub, http_get, spot, stop_file=ETC / "STOP")
+    return Runner(sim, ex, guard, pub, http_get, spot, stop_file=ETC / "STOP", scan_file=Path(a.scan_file) if a.scan_file else None)
 
 
 def run(runner: Runner):
@@ -133,6 +138,7 @@ def main(argv=None):
         p.add_argument("--dash-key", help="object key of the sealed snapshot (default smart-dashboard/data-<mode>.enc)")
         p.add_argument("--no-greeks", action="store_true")
         p.add_argument("--fresh", action="store_true", help="ignore state.json")
+        p.add_argument("--scan-file", default="/var/lib/smart-mm/scan/scan.json", help="the regular scan the hold rule counts ('' to ignore)")
     c = sub.add_parser("check")
     c.add_argument("--key-file", default=str(ETC / "key"))
     s = sub.add_parser("stop")
