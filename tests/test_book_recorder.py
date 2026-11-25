@@ -61,6 +61,24 @@ def test_select_pins_and_caps_per_event():
     assert [m["slug"] for m in got] == ["m3", "m9", "m1"]
 
 
+def test_select_adds_quieter_markets_with_a_wide_spread():
+    far = "2026-12-31T00:00:00Z"
+    w = dict(bestBid=0.40, bestAsk=0.43, orderPriceMinTickSize=0.01, end=far)
+    rows = [gm(1, 9000, **w), gm(2, 8000),
+            gm(3, 900, **w),                                           # wide and below the ranking: taken
+            gm(4, 800, **{**w, "bestAsk": 0.41}),                      # one tick: nothing to earn inside
+            gm(5, 700, **{**w, "bestBid": 0.02, "bestAsk": 0.05}),     # too close to 0
+            gm(6, 650, **{**w, "end": "2026-11-21T00:00:00Z"}),        # ends within 3 days
+            gm(7, 600),                                                # no quote known
+            gm(8, 550, **w), gm(9, 540, **w),
+            gm(10, 400, **w)]                                          # too little volume
+    got = mk.select(Gamma(rows), n=2, now=NOW, page=4, wide=2)
+    assert [m["slug"] for m in got] == ["m1", "m2", "m3", "m8"]
+    assert [m.get("pool") for m in got] == [None, None, "wide", "wide"]
+    assert [m["slug"] for m in mk.select(Gamma(rows), n=2, now=NOW, page=4, wide=9)] == ["m1", "m2", "m3", "m8", "m9"]
+    assert [m["slug"] for m in mk.select(Gamma(rows), n=2, now=NOW, page=4)] == ["m1", "m2"]
+
+
 def test_select_stops_paging_when_enough():
     g = Gamma([gm(i, 1000 - i) for i in range(1, 400)])
     assert len(mk.select(g, n=150, now=NOW, page=100)) == 150

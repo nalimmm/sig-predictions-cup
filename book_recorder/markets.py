@@ -72,17 +72,40 @@ def eligible(m: dict, raw: dict, now: datetime, min_hours_left: float, min_liqui
     return True
 
 
+WIDE = {"min_volume": 500.0, "min_spread_ticks": 2.0, "min_mid": 0.10, "max_mid": 0.90, "min_days_left": 3.0}
+
+
+def is_wide(m: dict, raw: dict, now: datetime, **over) -> bool:
+    """A quieter market with room inside its spread, as Gamma shows it right now: the kind the
+    market making scan can select, and that the volume ranking alone never reaches. The figures
+    mirror the scan's own thresholds; a market with a missing figure is left out."""
+    c = {**WIDE, **over}
+    try:
+        bid, ask = float(raw["bestBid"]), float(raw["bestAsk"])
+        tick = float(raw.get("orderPriceMinTickSize") or 0.01)
+    except (KeyError, TypeError, ValueError):
+        return False
+    end = _date(m["end_date"])
+    if end is not None and end < now + timedelta(days=c["min_days_left"]):
+        return False
+    if m["volume_24h"] < c["min_volume"] or not 0 < bid < ask < 1 or tick <= 0:
+        return False
+    return (ask - bid) / tick >= c["min_spread_ticks"] - 1e-9 and c["min_mid"] <= (bid + ask) / 2 <= c["max_mid"]
+
+
 def select(get: Callable[..., object], n: int = 100, min_hours_left: float = 24.0,
            min_liquidity: float = 1000.0, max_per_event: Optional[int] = None,
            pinned: Iterable[str] = (), now: Optional[datetime] = None, page: int = 100,
-           max_pages: int = 10) -> List[dict]:
+           max_pages: int = 10, wide: int = 0) -> List[dict]:
     """The `n` most active eligible markets, by 24h volume. `get(url, **params)` returns parsed JSON.
 
     `pinned` lists slugs or condition ids that are always included (and count towards `n`).
-    `max_per_event` caps how many markets one event (one neg-risk group) may take."""
+    `max_per_event` caps how many markets one event (one neg-risk group) may take.
+    `wide` adds up to that many markets from below the ranking that pass `is_wide`, most active
+    first; they come on top of `n` and carry "pool": "wide"."""
     now = now or datetime.now(timezone.utc)
     pinned = {p for p in pinned}
-    chosen, per_event, seen = [], {}, set()
+    chosen, per_event, seen, wide_ok = [], {}, set(), set()
     pinned_found = []
     for i in range(max_pages):
         rows = get(f"{GAMMA}/markets", active="true", closed="false", archived="false",
@@ -106,8 +129,12 @@ def select(get: Callable[..., object], n: int = 100, min_hours_left: float = 24.
                 continue
             per_event[ev] = per_event.get(ev, 0) + 1
             chosen.append(m)
+            if wide and is_wide(m, raw, now):
+                wide_ok.add(m["condition_id"])
         if len(chosen) + len(pinned_found) >= n and len(pinned_found) == len(pinned):
-            break
+            below = [m for m in chosen[max(0, n - len(pinned_found)):] if m["condition_id"] in wide_ok]
+            if len(below) >= wide or (chosen and chosen[-1]["volume_24h"] < WIDE["min_volume"]):
+                break
         if len(rows) < page:
             break
     missing = pinned - {m["slug"] for m in pinned_found} - {m["condition_id"] for m in pinned_found}
@@ -120,7 +147,9 @@ def select(get: Callable[..., object], n: int = 100, min_hours_left: float = 24.
             if m and not raw.get("closed"):
                 pinned_found.append(m)
                 break
-    return pinned_found + chosen[:max(0, n - len(pinned_found))]
+    top = max(0, n - len(pinned_found))
+    extra = [{**m, "pool": "wide"} for m in chosen[top:] if m["condition_id"] in wide_ok][:wide]
+    return pinned_found + chosen[:top] + extra
 
 
 def asset_ids(markets: List[dict]) -> List[str]:

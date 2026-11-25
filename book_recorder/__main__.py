@@ -48,7 +48,7 @@ def _selector(a):
     get = partial(http_get, _session())
     pinned = [p.strip() for p in (a.pin or "").split(",") if p.strip()]
     return lambda: mk.select(get, n=a.markets, min_hours_left=a.min_hours_left, min_liquidity=a.min_liquidity,
-                             max_per_event=a.max_per_event or None, pinned=pinned)
+                             max_per_event=a.max_per_event or None, pinned=pinned, wide=a.wide)
 
 
 def _selection_args(p):
@@ -58,6 +58,8 @@ def _selection_args(p):
     p.add_argument("--min-liquidity", type=float, default=1000.0, help="minimum Gamma liquidity in USDC")
     p.add_argument("--max-per-event", type=int, default=0, help="cap per event, 0 = no cap")
     p.add_argument("--pin", help="comma separated slugs or condition ids always recorded")
+    p.add_argument("--wide", type=int, default=0,
+                   help="also follow up to this many quieter markets with a spread of 2 ticks or more (default 0)")
 
 
 def main(argv=None):
@@ -105,7 +107,7 @@ def main(argv=None):
 
     if a.cmd == "markets":
         for x in _selector(a)():
-            print(f"{x['volume_24h']:>12,.0f}  {x['liquidity']:>10,.0f}  {len(x['tokens'])}  {x['slug']}")
+            print(f"{x['volume_24h']:>12,.0f}  {x['liquidity']:>10,.0f}  {len(x['tokens'])}  {x.get('pool', 'top'):<5} {x['slug']}")
         return
     if a.cmd == "stats":
         for f in a.files:

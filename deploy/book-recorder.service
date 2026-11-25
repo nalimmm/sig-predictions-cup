@@ -6,7 +6,10 @@ Wants=network-online.target
 [Service]
 User=bot
 WorkingDirectory=/opt/sig-predictions-cup
-ExecStart=/usr/bin/python3 -m book_recorder record --out /var/lib/book-recorder --markets 100 --max-gb 12
+# The paper simulator's markets (SMART_MM_SLUGS) are pinned so they are always recorded; --wide adds
+# quieter markets with a spread of 2 ticks or more, the kind the market making scan can select.
+EnvironmentFile=-/etc/smart-mm.env
+ExecStart=/usr/bin/python3 -m book_recorder record --out /var/lib/book-recorder --markets 100 --wide 40 --pin "${SMART_MM_SLUGS}" --max-gb 12
 # /var/lib/book-recorder, created and owned by the service user
 StateDirectory=book-recorder
 Restart=always
@@ -16,7 +19,7 @@ Environment=PYTHONUNBUFFERED=1
 Nice=10
 CPUWeight=20
 IOWeight=20
-MemoryMax=400M
+MemoryMax=500M
 
 [Install]
 WantedBy=multi-user.target
