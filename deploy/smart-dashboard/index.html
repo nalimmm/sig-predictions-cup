@@ -175,7 +175,7 @@ function draw(){
   const cols=G?10:8, g=m=>G?`<td>${m.delta==null?'<span class="mut">n/a</span>':sg(m.delta)}</td><td>${m.iv==null?'<span class="mut">n/a</span>':num(100*m.iv,0)+"%"}</td>`:"";
   $("mk").innerHTML=D.markets.map(m=>`<tr class="m" data-id="${esc(m.slug)}"><td title="${esc(name(m))}">${esc(name(m))}</td><td class="c"></td><td class="${ng(m.pnl_mid)}">${sg(m.pnl_mid)}</td><td>${m.risk==null?"…":num(m.risk)}</td>`+
     `<td>${m.risk==null?"…":num(100*m.risk/cap,1)+`<span class="pb"><i style="width:${Math.min(100,100*m.risk/Math.max(...D.markets.map(k=>k.risk||0),.01))}%"></i></span>`}</td><td>${pl(m.inv,1)}</td>${g(m)}<td>${m.fills}</td>`+
-    `<td class="${m.stopped||gone.includes(m.slug)?"neg":"mut"}">${gone.includes(m.slug)?"missing":m.stopped?"stopped":m.fills?"active":"waiting"}</td></tr>`+(sel===m.slug?`<tr class="d"><td colspan="${cols}"></td></tr>`:"")).join("")+
+    `<td class="${m.stopped||gone.includes(m.slug)?"neg":"mut"}">${gone.includes(m.slug)?"missing":m.stopped?"stopped":m.held?"reduce only":m.fills?"active":"waiting"}</td></tr>`+(sel===m.slug?`<tr class="d"><td colspan="${cols}"></td></tr>`:"")).join("")+
     (S?S.new:[]).map(s=>`<tr><td title="${esc(s)}">${esc(name({slug:s}))}</td><td class="c mut">selected by the scan, not quoted</td><td colspan="${cols-3}"></td><td class="mut">candidate</td></tr>`).join("")+
     miss.map(s=>`<tr><td title="${esc(s)}">${esc(name({slug:s}))}</td><td class="c mut">not recorded today</td><td colspan="${cols-3}"></td><td class="neg">missing</td></tr>`).join("");
   for(const tr of $("mk").querySelectorAll("tr.m")){const m=D.markets.find(k=>k.slug===tr.dataset.id), c=tr.children[1]; c.innerHTML=priceChart(m,Math.max(220,c.clientWidth-16),46,false);

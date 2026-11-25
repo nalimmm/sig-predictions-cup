@@ -135,7 +135,13 @@ def main(argv=None):
                 raise SystemExit("--upload needs SMART_DASH_PASSWORD: the snapshot is never uploaded in clear")
             from book_recorder.offload import client_from_env
             client, bucket, _ = client_from_env()
+        if os.environ.get("SMART_MM_SCAN_FAILS"):   # the scan rule is set in the env file: off unless a number is given
+            mcfg.scan_fail_limit = int(os.environ["SMART_MM_SCAN_FAILS"])
+            mcfg.scan_exempt = tuple(x.strip() for x in os.environ.get("SMART_MM_SCAN_EXEMPT", "").split(",") if x.strip())
         sim = MMSim(a.data, [x.strip() for x in a.slugs.split(",") if x.strip()], mcfg)
+        log.info("scan rule: %s", "reduce only after %d failed scans in a row, %d markets exempt" % (
+            mcfg.scan_fail_limit, len(mcfg.scan_exempt)) if mcfg.scan_fail_limit else "off")
+        scan_next = 0.0
         spot = None
         if not a.no_greeks:
             from .greeks import binance_spot as spot
@@ -167,6 +173,13 @@ def main(argv=None):
                         f.write(json.dumps({"t": int(spot_at * 1000), "px": px}) + "\n")
                 elif time.time() - spot_at > 600:
                     sim.spot = None
+            if time.time() >= scan_next:                # a new scan is counted once, within a minute
+                scan_next = time.time() + 60
+                try:
+                    if sim.on_scan(json.loads((Path(a.out) / "scan" / "scan.json").read_text())):
+                        log.info("scan counted, failed in a row: %s", {k: v for k, v in sim.scan_fails.items() if v})
+                except (OSError, ValueError):
+                    pass
             sim.on_event(ev)
             if pub.maybe(sim) and pub.errors:
                 log.warning("%d failed uploads so far", pub.errors)
@@ -226,6 +239,7 @@ def main(argv=None):
                 reasons[w] = reasons.get(w, 0) + 1
         (out / "scan.json").write_text(json.dumps({"days": days, "hours": a.hours, "generated_ms": int(time.time() * 1000), "events_read": n, "markets_measured": len(rows),
                                                    "selected": keep, "slugs": ",".join(r["slug"] for r in keep),
+                                                   "verdicts": {r["slug"]: r["rejected"] for r in rows},
                                                    "rejections": reasons, "near_misses_one_reason": near}, indent=1))
         print(json.dumps({"markets_measured": len(rows), "selected": keep}, indent=1))
         return

@@ -68,6 +68,8 @@ class MMConfig:
     min_hours_left: float = 24.0        # this close: sell what is left into the book
     taker_fee_rate: float = 0.07        # fee = shares * rate * p * (1 - p), the crypto rate, the highest category
     take_every_s: float = 60.0
+    scan_fail_limit: int = 0            # a quoted market that fails this many scans in a row: reduce only (0 = rule off)
+    scan_exempt: tuple = ()             # slugs the scan rule leaves alone
     min_shares: float = 5.0
     sweep_window_s: float = 30.0
     sweep_usdc: float = 200.0
@@ -145,6 +147,31 @@ class MMSim:
         self.missing = set(slugs)
         self.resume_ms = 0
         self.spot: Optional[float] = None           # BTC price, set by the live loop; None: no delta limit
+        self.scan_fails: Dict[str, int] = {}        # slug -> scans failed in a row
+        self.scan_seen = 0                          # generated_ms of the last scan counted
+
+    # ------------------------------------------------------------ staying in the list
+    RANKING = ("another market of the same event ranks higher", "below the top")
+
+    def on_scan(self, d: dict) -> bool:
+        """Count one scan (scan.json of mm-scan), once. A quoted market fails when it was measured
+        and misses a threshold; losing only on ranking (top N, one per event) is not a failure, and
+        a market the scan did not measure keeps its count. Passing once clears the count."""
+        gen, verdicts = d.get("generated_ms") or 0, d.get("verdicts")
+        if verdicts is None or gen <= self.scan_seen:
+            return False
+        self.scan_seen = gen
+        for slug in self.slugs:
+            if slug in verdicts:
+                why = [w.strip() for w in verdicts[slug].split(";") if w.strip()]
+                bad = any(not w.startswith(self.RANKING) for w in why)
+                self.scan_fails[slug] = self.scan_fails.get(slug, 0) + 1 if bad else 0
+        return True
+
+    def held(self, q: Quoter) -> bool:
+        """Reduce only because the market stopped passing the scan. Lifted when it passes again."""
+        lim = self.cfg.scan_fail_limit
+        return bool(lim) and q.slug not in self.cfg.scan_exempt and self.scan_fails.get(q.slug, 0) >= lim
 
     # ------------------------------------------------------------ setup
     def load(self, day: str):
@@ -171,7 +198,7 @@ class MMSim:
             "pulls", "quote_updates", "quoted_s", "last_mid", "last_bid", "last_ask", "fees", "taken")
 
     def state(self) -> dict:
-        return {"version": 1, "now": self.now, "quoters": [
+        return {"version": 1, "now": self.now, "scan": {"fails": self.scan_fails, "seen": self.scan_seen}, "quoters": [
             {"slug": q.slug, **{k: getattr(q, k) for k in self.KEEP}, "fills": q.fills, "nav_path": q.nav_path,
              "quotes": list(q.quotes)}
             for q in self.q.values()]}
@@ -181,6 +208,7 @@ class MMSim:
         events older than `resume_ms` only rebuild the books: no quote and no fill is imagined for
         the time the simulator was down."""
         self.resume_ms = resume_ms
+        self.scan_fails, self.scan_seen = dict(st.get("scan", {}).get("fails", {})), st.get("scan", {}).get("seen", 0)
         for d in st.get("quoters", []):
             q = Quoter(token="saved:" + d["slug"], slug=d["slug"], end_ms=None, under=underlying(d["slug"]))
             for k in self.KEEP:
@@ -432,7 +460,7 @@ class MMSim:
         else:
             bsz = min(qs, -q.inv + flip / max(my_bid, 0.01))
             asz = min(qs, room / max(1 - my_ask, 0.01))
-        if late or q.reduce_only:                   # never open or flip: at most flatten
+        if late or q.reduce_only or self.held(q):   # never open or flip: at most flatten
             bsz, asz = min(bsz, max(-q.inv, 0.0)), min(asz, max(q.inv, 0.0))
         if gfrac >= 1.0:                            # net delta at its limit: nothing that adds to it
             bsz = 0.0

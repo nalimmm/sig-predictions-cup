@@ -380,6 +380,35 @@ def test_mm_stops_opening_near_the_end_date(tmp_path):
     assert sim.q[A].fills == [] and sim.q[A].bid is None
 
 
+def test_mm_market_failing_the_scan_in_a_row_only_reduces(tmp_path):
+    from smart.mm import MMConfig, MMSim
+    lines = wide(T0, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50) + [trade(T0 + 10000, A, 0.39, 100, "SELL")]
+
+    def run(d, scans, **cfg):
+        write_day(tmp_path / d / "data", lines)
+        sim = MMSim(tmp_path / d / "data", ["m"], MMConfig(**cfg))
+        for i, why in enumerate(scans):
+            assert sim.on_scan({"generated_ms": 1000 + i, "verdicts": {"m": why}})
+        for ev in replay(tmp_path / d / "data" / "book", [DAY]):
+            sim.on_event(ev)
+        return sim
+
+    bad = "spread too tight; edge not significant"
+    sim = run("a", [bad, bad], scan_fail_limit=2)
+    assert sim.scan_fails == {"m": 2} and sim.held(sim.q[A]) and sim.q[A].fills == [] and sim.q[A].bid is None
+    assert not sim.on_scan({"generated_ms": 1001, "verdicts": {"m": bad}})          # the same scan is counted once
+    assert not sim.on_scan({"generated_ms": 2000})                                  # a scan file from before the rule
+    assert sim.on_scan({"generated_ms": 3000, "verdicts": {}}) and sim.scan_fails == {"m": 2}    # not measured: count kept
+    back = MMSim(tmp_path / "a" / "data", ["m"], MMConfig(scan_fail_limit=2))
+    back.restore(sim.state(), 0)
+    assert back.scan_fails == {"m": 2} and back.scan_seen == 3000
+    assert sim.on_scan({"generated_ms": 4000, "verdicts": {"m": ""}}) and not sim.held(sim.q[A])  # passes again: lifted
+    assert len(run("b", [bad], scan_fail_limit=2).q[A].fills) == 1                  # one failure is not enough
+    assert len(run("c", [bad, "below the top 8", bad], scan_fail_limit=2).q[A].fills) == 1       # ranking alone clears the count
+    assert len(run("d", [bad, bad]).q[A].fills) == 1                                # rule off by default
+    assert len(run("e", [bad, bad], scan_fail_limit=2, scan_exempt=("m",)).q[A].fills) == 1
+
+
 def test_mm_does_not_add_to_a_short_while_the_price_runs_against_it_then_stops(tmp_path):
     # the market climbs from 0.80 to 0.95 and lifts our ask at every step
     lines, t = [], T0
