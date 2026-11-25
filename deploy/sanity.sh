@@ -89,7 +89,8 @@ c = asdict(MMConfig())
 print("rules in the code:", {k: c[k] for k in ("quote_usdc", "max_inventory_usdc", "max_group_usdc", "max_net_delta_usdc", "stop_loss_usdc",
                                                "stop_exit_hours", "exit_hours", "min_hours_left", "scan_fail_limit") if k in c})
 live = " ".join(open(os.path.join("smart/live", f)).read() for f in os.listdir("smart/live") if f.endswith(".py"))
-print("shadow code mentions: scan rule %s, two-stage exit %s" % ("yes" if "on_scan" in live else "NO", "yes" if "stop_exit_hours" in live else "NO"))
+print("shadow: quotes through the paper's own on_book (so same caps, two-stage exit, scan rule): %s; reads the scans: %s" % (
+    "yes" if "super().on_book(q)" in live else "NO", "yes" if "on_scan" in live else "NO"))
 def show(name, path):
     try:
         st = json.load(open(path))
