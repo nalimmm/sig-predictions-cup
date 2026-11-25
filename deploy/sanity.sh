@@ -78,7 +78,7 @@ for u in book-recorder smart-mm-live smart-mm-shadow; do
   s=$(systemctl show $u.service -p ActiveEnterTimestamp --value)
   echo "$u: python files changed after its start: $(find $ROOT/smart $ROOT/book_recorder -name '*.py' -newermt "$s" 2>/dev/null | wc -l), runs from $(systemctl show $u.service -p WorkingDirectory --value)"
 done
-for f in book-recorder.service smart-mm-live.service smart-mm-scan.service smart-mm-scan.timer smart-mm-shadow.service smart-mm-real.service; do
+for f in book-recorder.service book-offload.service smart-mm-live.service smart-mm-scan.service smart-mm-scan.timer smart-mm-shadow.service smart-mm-real.service; do
   if [ -e $ROOT/deploy/$f ]; then cmp -s /etc/systemd/system/$f $ROOT/deploy/$f && echo "unit $f: as in the code" || echo "unit $f: DIFFERS from the code"; else echo "unit $f: no copy in $ROOT/deploy"; fi
 done
 

@@ -9,7 +9,7 @@ User=bot
 WorkingDirectory=/opt/sig-predictions-cup
 # BOOK_S3_* credentials: root-only file, never in the repository (see book-recorder.env.example)
 EnvironmentFile=/etc/book-recorder.env
-ExecStart=/usr/bin/python3 -m book_recorder offload --out /var/lib/book-recorder --keep-local-days 7
+ExecStart=/usr/bin/python3 -m book_recorder offload --out /var/lib/book-recorder --keep-local-days 5
 StateDirectory=book-recorder
 Environment=PYTHONUNBUFFERED=1
 Nice=15
