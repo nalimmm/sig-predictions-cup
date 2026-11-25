@@ -20,6 +20,10 @@ for u in book-recorder smart-mm-live smart-mm-shadow smart-mm-real polymarket-dr
     "$(systemctl show $u.service -p MemoryMax --value | awk '{ if ($1+0>0 && $1+0<1e15) printf "%dM", $1/1048576; else print "-" }')" \
     "$(systemctl show $u.service -p ActiveEnterTimestamp --value)"
 done
+echo "memory of the process itself (anon) and file cache counted with it, MB:"
+for u in book-recorder smart-mm-live smart-mm-shadow; do
+  awk -v u=$u '$1=="anon"{a=$2} $1=="file"{f=$2} END{printf "  %-18s own %d, cache %d\n", u, a/1048576, f/1048576}' /sys/fs/cgroup/system.slice/$u.service/memory.stat 2>/dev/null
+done
 h "2. timers and the last run of what they start"
 for t in book-offload book-trades smart-mm-scan polymarket-dryrun; do
   printf '%-18s timer=%-9s enabled=%-9s last_result=%-8s exit=%s\n' "$t" "$(systemctl is-active $t.timer)" \
@@ -41,7 +45,7 @@ h "4. machine"
 uptime; free -m | sed -n 1,3p; df -h / | tail -1
 echo "clock synchronised: $(timedatectl show -p NTPSynchronized --value)"
 echo "books on disk: $(du -sh /var/lib/book-recorder/book 2>/dev/null | cut -f1), day files: $(ls /var/lib/book-recorder/book 2>/dev/null | grep -c jsonl)"
-ls /var/lib/book-recorder/book 2>/dev/null | grep jsonl | sed 's/\..*//' | sort -u | tr '\n' ' '; echo
+ls -l /var/lib/book-recorder/book 2>/dev/null | awk '/jsonl/{printf "  %s %d MB\n", $NF, $5/1048576}'
 
 h "5. freshness (seconds since the last write)"
 age "$(ls -t /var/lib/book-recorder/book/* 2>/dev/null | head -1)"
@@ -100,8 +104,14 @@ def show(name, path):
     print("%s: %d markets, %d fills, stopped %d, scans failed in a row %s" % (
         name, len(qs), sum(len(q.get("fills", [])) for q in qs), sum(1 for q in qs if q.get("reduce_only")),
         {k[:28]: v for k, v in st.get("scan", {}).get("fails", {}).items() if v} or "none"))
+    tot = 0.0
     for q in qs:
-        print("   %-62s inv %8.1f  stopped %s" % (q["slug"][:62], q.get("inv", 0), bool(q.get("reduce_only"))))
+        inv, avg = q.get("inv", 0), q.get("avg", 0)
+        risk = inv * avg if inv >= 0 else -inv * (1 - avg)          # dollars the position can still lose
+        tot += risk
+        print("   %-58s %8.1f shares at %.3f = %5.2f $ at risk (cap %g)  stopped %s" % (
+            q["slug"][:58], inv, avg, risk, c["max_inventory_usdc"], bool(q.get("reduce_only"))))
+    print("   total at risk %.2f $ (cap per underlying %g)" % (tot, c["max_group_usdc"]))
     return {q["slug"] for q in qs}
 a, b = show("paper", "/var/lib/smart-mm/state.json"), show("shadow", "/var/lib/smart-shadow/state.json")
 print("same markets in paper and shadow:", "yes" if a and a == b else "NO  only paper %s  only shadow %s" % (sorted(a - b), sorted(b - a)))
@@ -109,6 +119,10 @@ try:
     d = json.load(open("/var/lib/smart-mm/scan/scan.json"))
     print("last scan: window %s h, %d markets measured, %d selected, verdicts written: %s" % (
         d.get("hours"), d.get("markets_measured", 0), len(d.get("selected", [])), "yes" if "verdicts" in d else "no (scan older than the new code)"))
+    for r in d.get("selected", []):
+        print("   selected: %s | mid %s, spread %s ticks, %s trades/day, %s $/day, edge 5 min %s c (t %s), 30 min %s c, %s days left" % (
+            r.get("slug"), r.get("mid"), r.get("spread_ticks"), r.get("trades_per_day"), r.get("usdc_per_day"),
+            r.get("edge_300s_c"), r.get("edge_300s_t"), r.get("edge_1800s_c"), r.get("days_left")))
 except Exception as e:
     print("last scan not readable:", type(e).__name__)
 EOF
