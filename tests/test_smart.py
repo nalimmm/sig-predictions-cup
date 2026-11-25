@@ -409,6 +409,21 @@ def test_mm_market_failing_the_scan_in_a_row_only_reduces(tmp_path):
     assert len(run("e", [bad, bad], scan_fail_limit=2, scan_exempt=("m",)).q[A].fills) == 1
 
 
+def test_mm_stopped_market_leaves_as_a_maker_then_sells_into_the_book(tmp_path):
+    H = 3600000
+    lines = wide(T0, 0.40, 0.50) + wide(T0 + 5000, 0.40, 0.50) + [trade(T0 + 10000, A, 0.40, 100, "SELL")]   # we buy
+    lines += wide(T0 + 60000, 0.30, 0.36) + wide(T0 + 65000, 0.30, 0.36)                # the price drops: stopped
+    lines += wide(T0 + H, 0.30, 0.36)
+    sim, q, r = mm_run(tmp_path / "a", lines, stop_loss_usdc=0.3)
+    assert q.reduce_only and q.stop_ms == T0 + 60000 and q.inv > 0
+    assert q.bid is None and q.ask == 0.31 and q.ask_sz == round(q.inv, 2)              # one tick above the bid, all of it
+    assert q.taken == 0
+    sim, q, r = mm_run(tmp_path / "b", lines + wide(T0 + 3 * H, 0.30, 0.36), stop_loss_usdc=0.3)
+    assert q.inv == 0 and q.taken > 0 and q.fees > 0 and q.fills[-1]["price"] == 0.30   # two hours passed: sold at the bid
+    sim, q, r = mm_run(tmp_path / "c", lines + wide(T0 + 3 * H, 0.30, 0.36), stop_loss_usdc=0.3, stop_exit_hours=0)
+    assert q.inv > 0 and q.taken == 0 and q.ask > 0.31                                  # the old behaviour
+
+
 def test_mm_does_not_add_to_a_short_while_the_price_runs_against_it_then_stops(tmp_path):
     # the market climbs from 0.80 to 0.95 and lifts our ask at every step
     lines, t = [], T0

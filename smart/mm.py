@@ -54,6 +54,8 @@ class MMConfig:
     quote_usdc: float = 3.0             # capital per quote (3 % of 100)
     max_inventory_usdc: float = 10.0    # per market: the most the open position can lose (10 % of 100)
     stop_loss_usdc: float = 5.0         # per market: past this loss at mid, only quote the side that reduces
+    stop_exit_hours: float = 2.0        # after the stop: this long to get out as a maker, one tick from the far side,
+                                        # for the whole position; then what is left is sold into the book (0 = never)
     half_spread_ticks: float = 1.0      # minimum distance from fair to each quote
     skew_ticks: float = 2.0             # shift of fair at full inventory
     improve: bool = True                # step one tick inside the best price when there is room
@@ -93,6 +95,7 @@ class Quoter:
     cash: float = 0.0
     avg: float = 0.0                    # average entry price of the open position
     reduce_only: bool = False           # set for good once the market has lost stop_loss_usdc
+    stop_ms: Optional[int] = None       # when that happened
     bid: Optional[float] = None         # live quotes
     ask: Optional[float] = None
     bid_sz: float = 0.0
@@ -194,7 +197,7 @@ class MMSim:
                     self.missing.discard(m["slug"])
 
     # ------------------------------------------------------------ state kept across restarts
-    KEEP = ("inv", "cash", "avg", "reduce_only", "bought", "sold", "buy_cost", "sell_proceeds", "max_long", "max_short",
+    KEEP = ("inv", "cash", "avg", "reduce_only", "stop_ms", "bought", "sold", "buy_cost", "sell_proceeds", "max_long", "max_short",
             "pulls", "quote_updates", "quoted_s", "last_mid", "last_bid", "last_ask", "fees", "taken")
 
     def state(self) -> dict:
@@ -451,6 +454,16 @@ class MMSim:
         my_bid, my_ask = round(my_bid, 6), round(my_ask, 6)
         left_h = (q.end_ms - self.now) / 3.6e6 if q.end_ms is not None else math.inf
         late = left_h < cfg.exit_hours
+        if q.reduce_only and q.stop_ms is None:
+            q.stop_ms = self.now
+        leaving = q.reduce_only and cfg.stop_exit_hours > 0 and abs(q.inv) > 1e-9
+        if leaving:                                 # stopped out: the tightest quote that still rests in the book
+            if q.inv > 0:
+                my_ask = round(bid + tick, 6)
+            else:
+                my_bid = round(ask - tick, 6)
+            if self.now >= q.stop_ms + cfg.stop_exit_hours * 3.6e6 and self.now >= q.next_take:
+                self.take_out(q, b)                 # the time to leave as a maker is over
         if left_h < cfg.min_hours_left and abs(q.inv) > 1e-9 and self.now >= q.next_take:
             self.take_out(q, b)
         qs = cfg.quote_usdc / max(min(mid, 1 - mid), 0.05)      # same share count on both sides
@@ -462,6 +475,8 @@ class MMSim:
             asz = min(qs, room / max(1 - my_ask, 0.01))
         if late or q.reduce_only or self.held(q):   # never open or flip: at most flatten
             bsz, asz = min(bsz, max(-q.inv, 0.0)), min(asz, max(q.inv, 0.0))
+        if leaving:                                 # the whole position, not one quote of it
+            bsz, asz = max(-q.inv, 0.0), max(q.inv, 0.0)
         if gfrac >= 1.0:                            # net delta at its limit: nothing that adds to it
             bsz = 0.0
         elif gfrac <= -1.0:
