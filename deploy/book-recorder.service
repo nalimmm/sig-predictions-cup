@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 User=bot
-WorkingDirectory=/opt/sig-predictions-cup
+# The code tree the Smart deployment refreshes (git archive into /opt/smart-mm).
+WorkingDirectory=/opt/smart-mm
 # The paper simulator's markets (SMART_MM_SLUGS) are pinned so they are always recorded; --wide adds
 # quieter markets with a spread of 2 ticks or more, the kind the market making scan can select.
 EnvironmentFile=-/etc/smart-mm.env
