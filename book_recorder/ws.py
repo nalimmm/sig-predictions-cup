@@ -239,17 +239,37 @@ class Recorder:
             log.warning("%.1f GB free again: recording resumed (%d messages dropped)", free, self.dropped)
 
     def _prune(self, every: float = 3600.0):
-        """Keep book/ under max_gb: delete the oldest day files, never the one being written."""
+        """Keep book/ under max_gb: delete the oldest day files, never the one being written.
+
+        Where days are archived (offload_state.json exists), a day the archive does not hold at
+        its current size is kept and an error is logged, as long as the disk has room: losing the
+        only copy of a day is worse than passing the budget. Once the disk itself runs short
+        (within 1 GB of the point where recording pauses) the oldest day goes anyway, since the
+        services reading today's file need the recorder to go on."""
         if not self.max_gb or self.clock() - self._last_prune < every:
             return
         self._last_prune = self.clock()
         files = sorted(self.writer.dir.glob("*.jsonl.gz"))
         today = self.writer.path(utc_day(self.clock()))
         total = sum(f.stat().st_size for f in files)
+        archived = None                             # None: no archive here, the budget alone decides
+        try:
+            archived = json.loads((self.out / "offload_state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
         for f in files:
             if total <= self.max_gb * 1e9 or f == today:
                 break
             size = f.stat().st_size
+            if archived is not None and (archived.get("book/" + f.name) or {}).get("size") != size:
+                try:
+                    short = free_gb(self.out) < self.min_free_gb + 1.0
+                except OSError:
+                    short = False
+                if not short:
+                    log.error("book/ over %.0f GB but %s is not archived: kept", self.max_gb, f.name)
+                    continue
+                log.error("disk nearly full: deleting %s although it is NOT archived", f.name)
             f.unlink()
             total -= size
             self.event("main", "pruned", file=f.name, gb=round(size / 1e9, 3))

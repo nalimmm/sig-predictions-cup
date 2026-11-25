@@ -476,6 +476,25 @@ def test_book_dir_is_kept_under_budget(tmp_path):
     rec.writer.close()
 
 
+def test_budget_does_not_delete_a_day_the_archive_does_not_hold(tmp_path, monkeypatch):
+    import book_recorder.ws as ws
+    rec = Recorder(tmp_path, selection(1), clock=Clock(T0), max_gb=2e-9 * 1000, min_free_gb=2.0)
+    for day in ("2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19"):
+        (tmp_path / "book" / f"{day}.jsonl.gz").write_bytes(b"x" * 900)
+    left = lambda: sorted(f.name[:10] for f in (tmp_path / "book").glob("*.gz"))
+    # the archive holds the 17th, and an older size of the 16th (the file changed since)
+    (tmp_path / "offload_state.json").write_text(json.dumps({
+        "book/2026-11-16.jsonl.gz": {"size": 5}, "book/2026-11-17.jsonl.gz": {"size": 900}}))
+    monkeypatch.setattr(ws, "free_gb", lambda p: 50.0)
+    rec._prune()
+    assert left() == ["2026-11-16", "2026-11-18", "2026-11-19"]      # only the archived day went
+    monkeypatch.setattr(ws, "free_gb", lambda p: 2.5)                # the disk itself is nearly full
+    rec._last_prune = float("-inf")
+    rec._prune()
+    assert left() == ["2026-11-18", "2026-11-19"]                    # back under the budget, today's file never touched
+    rec.writer.close()
+
+
 # ------------------------------------------------------------------ archive to object storage
 class FakeS3:
     def __init__(self, corrupt=()):
