@@ -644,3 +644,11 @@ def test_scan_keeps_steady_edges_one_per_event_and_says_why_it_rejects():
     assert r["steady"]["adverse_selection_c"] == 0.6 and r["steady"]["score"] == 0.45
     assert "same event" in r["sibling"]["rejected"] and "significant" in r["noisy"]["rejected"]
     assert "tight" in r["tight"]["rejected"] and "no edge" in r["toxic"]["rejected"]
+    # a match that was played keeps a far end date and a fat spread: its name and its silence give it away
+    rows = [{**base, "slug": "atp-a-b-2026-11-20", "event": "m1"}, {**base, "slug": "atp-c-d-2026-11-23", "event": "m2"},
+            {**base, "slug": "atp-e-f-2026-11-29", "event": "m3"}, {**base, "slug": "quiet", "event": "q", "hours_since_trade": 30.0},
+            {**base, "slug": "busy", "event": "b", "hours_since_trade": 0.5}]
+    r = {x["slug"]: x for x in scan(rows, "2026-11-21")}
+    assert r["atp-a-b-2026-11-20"]["days_left"] == -1 and "ends too soon" in r["atp-a-b-2026-11-20"]["rejected"]
+    assert "ends too soon" in r["atp-c-d-2026-11-23"]["rejected"] and not r["atp-e-f-2026-11-29"]["rejected"]
+    assert r["quiet"]["rejected"] == "no trade lately" and not r["busy"]["rejected"]

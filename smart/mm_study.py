@@ -29,6 +29,7 @@ B. The SIG Predictions Cup cycle, on the 30 days of trade history (`cycles`). Th
 import csv
 import heapq
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
@@ -164,7 +165,7 @@ class Markouts:
                 "token": canon, "tick": tick,
                 "mid": round(a.mid / a.samples, 3) if a.samples else None,
                 "trades_per_day": round(a.n / days), "usdc_per_day": round(a.usdc / days),
-                "share_buys": round(a.buys / a.n, 2),
+                "share_buys": round(a.buys / a.n, 2), "hours_since_trade": round((self.now - a.last) / 3.6e6, 1),
                 "spread_c": round(100 * a.spread / a.samples, 2) if a.samples else None,
                 "depth_best_usdc": round(a.depth / a.samples) if a.samples else None,
                 "half_spread_earned_c": round(100 * a.s / a.shares, 3),
@@ -185,7 +186,9 @@ class Markouts:
 
 # ============================================================ A2. Market scan
 SCAN = {"min_trades_per_day": 30, "min_usdc_per_day": 500, "min_mid": 0.10, "max_mid": 0.90, "min_spread_ticks": 2.0,
-        "min_days_left": 3, "min_edge_300s_c": 0.0, "min_edge_1800s_c": 0.0, "min_t": 2.0, "per_event": 1, "top": 8}
+        "min_days_left": 3, "min_edge_300s_c": 0.0, "min_edge_1800s_c": 0.0, "min_t": 2.0, "per_event": 1, "top": 8,
+        "max_hours_quiet": 12}
+SLUG_DAY = re.compile(r"(?<!\d)(20\d\d-\d\d-\d\d)(?!\d)")
 
 
 def scan(rows: List[dict], today: str, **over) -> List[dict]:
@@ -213,6 +216,12 @@ def scan(rows: List[dict], today: str, **over) -> List[dict]:
             left = (date.fromisoformat(r["end_date"]) - date.fromisoformat(today)).days if r.get("end_date") else None
         except ValueError:
             pass
+        for d in SLUG_DAY.findall(r.get("slug") or ""):         # a match or a daily market carries its day in its
+            try:                                                # name, and the listed end date can be days later
+                dl = (date.fromisoformat(d) - date.fromisoformat(today)).days
+                left = dl if left is None else min(left, dl)
+            except ValueError:
+                pass
         ticks = (r["spread_c"] / 100 / tick) if r.get("spread_c") is not None and tick else None
         why = []
         if r["trades_per_day"] < c["min_trades_per_day"] or r["usdc_per_day"] < c["min_usdc_per_day"]:
@@ -223,6 +232,8 @@ def scan(rows: List[dict], today: str, **over) -> List[dict]:
             why.append("spread too tight")
         if left is not None and left < c["min_days_left"]:
             why.append("ends too soon")
+        if r.get("hours_since_trade") is not None and r["hours_since_trade"] > c["max_hours_quiet"]:
+            why.append("no trade lately")
         if e300 is None or e300 <= c["min_edge_300s_c"]:
             why.append("no edge after 5 min")
         if e1800 is None or e1800 <= c["min_edge_1800s_c"]:
