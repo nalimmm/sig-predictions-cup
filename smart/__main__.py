@@ -7,6 +7,7 @@
   mm-study    which markets are worth making: maker edge after each trade, and the SIG cycle replayed
   mm-scan     rank the recorded markets for market making (flow, spread, adverse selection, event risk)
   mm-sim      paper market making on chosen markets, replayed on recorded days
+  coherence   price coherence between linked markets (nested thresholds, neg risk baskets), read only
   mm-live     the same simulator on the recorder's live file, feeding the private dashboard
   report      summarise a journal directory
   clear-halt  restart a pod halted by a circuit breaker (the user's decision, never automatic)
@@ -66,6 +67,13 @@ def main(argv=None):
     ms.add_argument("--slugs", required=True, help="comma separated market slugs")
     ms.add_argument("--out", required=True, help="mm_sim.json and mm_fills.jsonl go here")
     ms.add_argument("--config", help="JSON file overriding MMConfig defaults")
+    co = sub.add_parser("coherence", help="violations of logical constraints between linked markets, on recorded books")
+    co.add_argument("--data", default="/var/lib/book-recorder")
+    co.add_argument("--days", required=True)
+    co.add_argument("--out", required=True, help="coherence_summary.json, episodes.csv, families.csv")
+    co.add_argument("--latency", type=float, default=2.0, help="seconds between seeing a violation and trading it")
+    co.add_argument("--fee-rate", type=float, default=0.07, help="taker rate when Gamma gives none")
+    co.add_argument("--gamma", action="store_true", help="ask Gamma for fee rates and neg risk completeness (network)")
     ml = sub.add_parser("mm-live", help="paper market making on the recorder's live file, feeding the private dashboard")
     ml.add_argument("--data", default="/var/lib/book-recorder")
     ml.add_argument("--slugs", required=True)
@@ -113,6 +121,15 @@ def main(argv=None):
         s = mm_run(a.data, _days(a.days), a.out, progress=lambda n, x: log.info("%d events, %d markets", n, len(x.acc)))
         log.info("done in %.0f s", time.time() - t0)
         print(json.dumps(s, indent=1))
+        return
+
+    if a.cmd == "coherence":
+        from .coherence import run as co_run
+        t0 = time.time()
+        s = co_run(a.data, _days(a.days), a.out, latency_s=a.latency, fee_rate=a.fee_rate, use_gamma=a.gamma,
+                   progress=lambda n, x: log.info("%d events, %d episodes, %s", n, len(x.episodes), utc_day(x.now)))
+        log.info("done in %.0f s", time.time() - t0)
+        print(json.dumps({k: v for k, v in s.items() if k != "top_constraints"}, indent=1))
         return
 
     if a.cmd == "mm-sim":
